@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cthulhu</title>
+    <meta name="description" content="Print server for the Elegoo Mars 5 Ultra" />
+
+    <!-- .ico first for older browsers and the Windows taskbar; PNGs are what
+         modern browsers actually pick. Without any of these Chrome shows its
+         generic globe, which is what shipped until now. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png" />
+
+    <!-- iOS home screen. Worth having: the glanceable use case for this is a
+         phone, so it is likely to end up pinned there. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png" />
+    <meta name="apple-mobile-web-app-title" content="Cthulhu" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Matches --color-abyss, so the browser chrome does not flash white
+         against the dark dashboard on load. -->
+    <meta name="theme-color" content="#0d1b2e" />
   </head>
   <body>
     <div id="root"></div>
