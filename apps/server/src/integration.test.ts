@@ -28,6 +28,12 @@ beforeEach(async () => {
     PRINTER_IP: '127.0.0.1',
     DISCOVERY_ENABLED: 'false',
     DATABASE_PATH: join(dir, 'test.sqlite'),
+    // The fake printer binds an EPHEMERAL port, so the upload endpoint has to
+    // be pointed at it explicitly. Without this the server uploads to the
+    // default 3030, which passes on a developer machine that happens to have a
+    // fake printer running there and fails in CI with a 502 - the test was
+    // green for the wrong reason.
+    UPLOAD_PORT: String(printer.wsPort),
   });
 
   service = new PrinterService({
