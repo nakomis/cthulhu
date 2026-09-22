@@ -97,6 +97,14 @@ Every service behind Leia requires a client certificate, so viewing the
 dashboard on a phone means installing one via cert-portal. Print-finished
 notifications go via Pushover, which needs no certificate.
 
+> [!IMPORTANT]
+> **On iOS, open the dashboard in Safari, not Chrome.** Chrome on iOS does not
+> present client certificates from the system keychain — it uses its own
+> networking stack and will not offer the cert. The failure is a bare TLS
+> error with nothing to suggest the cause, so it looks like the server is
+> broken rather than the browser being incapable. Safari works, and so does
+> adding the dashboard to the home screen from Safari.
+
 ## Architecture Diagrams
 
 `docs/architecture/cthulhu.drawio` is the source for the architecture diagram.
