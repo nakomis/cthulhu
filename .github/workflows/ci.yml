@@ -42,14 +42,20 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # Build BEFORE typecheck and test. Workspace dependants resolve
+      # @cthulhu/* through the package "types"/"exports" fields, which point at
+      # dist - so on a clean checkout, where no dist exists yet, typechecking
+      # fake-printer fails with TS2307 "Cannot find module '@cthulhu/sdcp'".
+      # It passes on a developer machine only because dist is already there.
+      # `pnpm -r build` walks the workspace in dependency order.
+      - name: Build
+        run: pnpm -r build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
       - name: Test
         run: pnpm -r test
-
-      - name: Build
-        run: pnpm -r build
 
   synth:
     name: CDK synth

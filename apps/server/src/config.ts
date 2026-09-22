@@ -9,13 +9,22 @@ export interface Config {
   host: string;
   /**
    * Pinned printer address. Discovery is the convenience path; a pinned IP is
-   * the production path, and is the only option at all if the printer's WiFi
-   * lands it on a different subnet from Luke.
+   * the production path. The home network is a single flat 172.29.0.0/16, so
+   * broadcast discovery does work - but a pinned IP does not depend on
+   * broadcast surviving switches, WiFi isolation or a future VLAN split.
    */
   printerIp: string | undefined;
   /** Whether to attempt UDP broadcast discovery. Needs host networking. */
   discoveryEnabled: boolean;
   discoveryTimeoutMs: number;
+  discoveryBroadcastAddress: string;
+  /** Where the SQLite history database lives. */
+  databasePath: string;
+  /** Pushover, for print-finished notifications. Both required, or neither. */
+  pushoverUserKey: string | undefined;
+  pushoverAppToken: string | undefined;
+  /** MJPEG camera stream on the printer. */
+  cameraEnabled: boolean;
 }
 
 export class ConfigError extends Error {}
@@ -39,6 +48,17 @@ function boolFromEnv(env: NodeJS.ProcessEnv, key: string, fallback: boolean): bo
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const pushoverUserKey = env.PUSHOVER_USER_KEY || undefined;
+  const pushoverAppToken = env.PUSHOVER_APP_TOKEN || undefined;
+
+  // Half-configured notifications are worse than none: the print finishes,
+  // nothing buzzes, and nothing says why. Fail at startup instead.
+  if (Boolean(pushoverUserKey) !== Boolean(pushoverAppToken)) {
+    throw new ConfigError(
+      'Pushover needs BOTH PUSHOVER_USER_KEY and PUSHOVER_APP_TOKEN, or neither.',
+    );
+  }
+
   const config: Config = {
     // 9120 on Luke; Plane already holds 9110.
     port: intFromEnv(env, 'PORT', 9120),
@@ -46,6 +66,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     printerIp: env.PRINTER_IP || undefined,
     discoveryEnabled: boolFromEnv(env, 'DISCOVERY_ENABLED', true),
     discoveryTimeoutMs: intFromEnv(env, 'DISCOVERY_TIMEOUT_MS', 2000),
+    discoveryBroadcastAddress: env.DISCOVERY_BROADCAST_ADDRESS || '255.255.255.255',
+    databasePath: env.DATABASE_PATH ?? '/data/cthulhu.sqlite',
+    pushoverUserKey,
+    pushoverAppToken,
+    cameraEnabled: boolFromEnv(env, 'CAMERA_ENABLED', true),
   };
 
   if (!config.printerIp && !config.discoveryEnabled) {
