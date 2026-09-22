@@ -1,8 +1,30 @@
 import { PassThrough, type Readable } from 'node:stream';
 
+/**
+ * A live upstream connection plus the means to genuinely abort it.
+ *
+ * `abort` exists because destroying the Readable is NOT enough: a stream from
+ * `Readable.fromWeb(response.body)` keeps the underlying HTTP connection open,
+ * so the printer goes on counting the viewer and refuses everyone else. Found
+ * by running the real proxy against the fake printer and watching it answer
+ * 503 to a direct viewer long after the last browser had gone.
+ */
+export interface UpstreamHandle {
+  stream: Readable;
+  abort: () => void;
+}
+
 export interface CameraProxyOptions {
   /** Opens the upstream MJPEG stream. Injected so tests need no printer. */
-  openUpstream: () => Promise<Readable>;
+  openUpstream: () => Promise<UpstreamHandle>;
+  /**
+   * Called before the upstream is opened for the first viewer.
+   *
+   * Needed because onIdle sends Cmd 386 to DISABLE the stream, and without a
+   * matching enable the camera works exactly once and is then refused
+   * forever. Found by clicking Watch twice in the browser.
+   */
+  onActive?: () => void | Promise<void>;
   /** Called when the last viewer leaves, to release the single slot. */
   onIdle?: () => void | Promise<void>;
 }
@@ -19,14 +41,16 @@ export interface CameraProxyOptions {
  * ────────────────────────────────────────────────────────────────────────────
  */
 export class CameraProxy {
-  private upstream: Readable | undefined;
+  private upstream: UpstreamHandle | undefined;
   private readonly viewers = new Set<PassThrough>();
   private opening: Promise<void> | undefined;
-  private readonly openUpstream: () => Promise<Readable>;
+  private readonly openUpstream: () => Promise<UpstreamHandle>;
+  private readonly onActive: (() => void | Promise<void>) | undefined;
   private readonly onIdle: (() => void | Promise<void>) | undefined;
 
   constructor(options: CameraProxyOptions) {
     this.openUpstream = options.openUpstream;
+    this.onActive = options.onActive;
     this.onIdle = options.onIdle;
   }
 
@@ -58,9 +82,11 @@ export class CameraProxy {
     if (this.opening) return this.opening;
 
     this.opening = (async () => {
-      const stream = await this.openUpstream();
-      this.upstream = stream;
-      stream.on('data', (chunk: Buffer) => {
+      // Re-enable the stream before connecting; onIdle turned it off.
+      await this.onActive?.();
+      const handle = await this.openUpstream();
+      this.upstream = handle;
+      handle.stream.on('data', (chunk: Buffer) => {
         for (const v of this.viewers) v.write(chunk);
       });
       const drop = () => {
@@ -68,8 +94,8 @@ export class CameraProxy {
         for (const v of this.viewers) v.end();
         this.viewers.clear();
       };
-      stream.on('end', drop);
-      stream.on('error', drop);
+      handle.stream.on('end', drop);
+      handle.stream.on('error', drop);
     })();
 
     try {
@@ -80,10 +106,13 @@ export class CameraProxy {
   }
 
   private async closeUpstream(): Promise<void> {
-    const stream = this.upstream;
+    const handle = this.upstream;
     this.upstream = undefined;
-    if (stream) {
-      stream.destroy();
+    if (handle) {
+      // abort() first: destroying the stream alone leaves the TCP connection
+      // established and the printer's single slot occupied.
+      handle.abort();
+      handle.stream.destroy();
       await this.onIdle?.();
     }
   }

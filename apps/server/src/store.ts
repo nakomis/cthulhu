@@ -52,6 +52,15 @@ export function printStatusLabel(code: number | undefined): string {
 
 export interface StoreEvents {
   update: [PrinterView];
+  /**
+   * Emitted once when a print begins, carrying the taskId the printer
+   * assigned. Edge-triggered on the taskId changing, NOT on the REST call -
+   * so a print started from the machine's own touchscreen is recorded too,
+   * and so the row carries the real taskId rather than an empty string.
+   */
+  printStarted: [
+    { filename: string | undefined; taskId: string | undefined; totalLayer: number | undefined },
+  ];
   /** Emitted once per print completion, for notifications and history. */
   printFinished: [{ filename: string | undefined; taskId: string | undefined }];
 }
@@ -86,6 +95,7 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
   };
 
   private lastPrintStatus: number | undefined;
+  private lastTaskId: string | undefined;
 
   snapshot(): PrinterView {
     return structuredClone(this.view);
@@ -115,8 +125,20 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
     this.view.releaseFilmState = status.devicesStatus.releaseFilmState;
 
     const previous = this.lastPrintStatus;
+    const previousTask = this.lastTaskId;
     this.lastPrintStatus = info.status;
+    this.lastTaskId = info.taskId;
     this.touch();
+
+    // A new, non-empty taskId means a print has begun - whether we started it
+    // over REST or somebody pressed print on the machine itself.
+    if (info.taskId && info.taskId !== previousTask) {
+      this.emit('printStarted', {
+        filename: info.filename,
+        taskId: info.taskId,
+        totalLayer: info.totalLayer,
+      });
+    }
 
     if (info.status === PrintStatus.Complete && previous !== PrintStatus.Complete) {
       this.emit('printFinished', { filename: info.filename, taskId: info.taskId });
