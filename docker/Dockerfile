@@ -11,7 +11,9 @@ ENV PATH="$PNPM_HOME:$PATH"
 # `corepack enable` fails with "corepack: not found". Installing it explicitly
 # keeps pnpm's version driven by "packageManager" in package.json rather than
 # hardcoded here, where it would silently drift.
-RUN npm install -g corepack@latest && corepack enable
+# --force because corepack ships yarn/yarn.cjs shims and the node image
+# already has /usr/local/bin/yarn, so a plain install dies with EEXIST.
+RUN npm install -g --force corepack@latest && corepack enable
 WORKDIR /app
 
 # ---- dependencies -----------------------------------------------------------
