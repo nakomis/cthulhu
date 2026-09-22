@@ -21,6 +21,14 @@ export interface PrintRecord {
  */
 export class History {
   private readonly db: DatabaseSync;
+  /**
+   * node:sqlite throws ERR_INVALID_STATE on a closed handle, and status frames
+   * can still be in flight while the server shuts down - a print completing at
+   * the moment of a restart would otherwise throw from inside an event handler
+   * with nothing to catch it. History is best-effort by design, so a write
+   * after close is a no-op, not a crash.
+   */
+  private closed = false;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -39,6 +47,7 @@ export class History {
   }
 
   startPrint(taskId: string | undefined, filename: string | undefined, totalLayer?: number): void {
+    if (this.closed) return;
     // A restart mid-print would otherwise create a duplicate row for the same
     // task, so an existing open row for this task wins.
     if (taskId && this.openRowFor(taskId)) return;
@@ -56,6 +65,7 @@ export class History {
   }
 
   finishPrint(taskId: string | undefined, outcome: 'complete' | 'stopped' | 'error'): void {
+    if (this.closed) return;
     const now = new Date().toISOString();
     if (taskId) {
       this.db
@@ -80,6 +90,7 @@ export class History {
   }
 
   list(limit = 50): PrintRecord[] {
+    if (this.closed) return [];
     const rows = this.db
       .prepare(
         'SELECT id, task_id, filename, started_at, finished_at, outcome, total_layer FROM prints ORDER BY id DESC LIMIT ?',
@@ -98,6 +109,8 @@ export class History {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 }

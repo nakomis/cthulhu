@@ -26,10 +26,14 @@ export interface Config {
   /** MJPEG camera stream on the printer. */
   cameraEnabled: boolean;
   /**
-   * Full URL of the printer's MJPEG stream. The community docs barely cover
-   * the video stream, so the default below is a GUESS and must be overridable
-   * without a rebuild - the fake printer, for instance, serves it on the same
-   * port as the WebSocket. Use {ip} as a placeholder for the printer address.
+   * OVERRIDE for the camera stream URL. Empty by default, which is correct:
+   * the official spec has the printer return an RTSP address from Cmd 386, so
+   * the URL is asked for rather than configured.
+   *
+   * Set it to consume an MJPEG endpoint directly instead - the fake printer
+   * serves one on its own port, and a board that differs from the spec can be
+   * pointed at by hand without a rebuild. `{ip}` is replaced with the printer
+   * address.
    */
   cameraUrl: string;
   /**
@@ -94,7 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pushoverUserKey,
     pushoverAppToken,
     cameraEnabled: boolFromEnv(env, 'CAMERA_ENABLED', true),
-    cameraUrl: env.CAMERA_URL || 'http://{ip}:3031/video',
+    cameraUrl: env.CAMERA_URL || '',
     uploadPort: intFromEnv(env, 'UPLOAD_PORT', 3030),
     maxUploadBytes: intFromEnv(env, 'MAX_UPLOAD_BYTES', 1024 * 1024 * 1024),
     webRoot: env.WEB_ROOT || undefined,

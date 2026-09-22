@@ -4,6 +4,7 @@ import {
   type PrinterStatus,
   type PrintInfo,
   PrintStatus,
+  printErrorMessage,
   progressPercent,
   remainingMs,
 } from '@cthulhu/sdcp';
@@ -22,9 +23,17 @@ export interface PrinterView {
     progressPercent: number | undefined;
     remainingMs: number | undefined;
     errorNumber: number | undefined;
+    /** What the error number actually means, or null when there is none. */
+    errorMessage: string | null;
     taskId: string | undefined;
   };
   releaseFilmState: number | undefined;
+  /** Cumulative LCD exposure seconds - a consumable wear indicator. */
+  printScreen: number | undefined;
+  /** Release film use count, distinct from its health flag. */
+  releaseFilmUses: number | undefined;
+  /** 0 disconnected, 1 connected. Lets the UI distinguish absent from busy. */
+  cameraStatus: number | undefined;
   attributes: PrinterAttributes | undefined;
   updatedAt: string | undefined;
 }
@@ -92,9 +101,13 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       progressPercent: undefined,
       remainingMs: undefined,
       errorNumber: undefined,
+      errorMessage: null,
       taskId: undefined,
     },
     releaseFilmState: undefined,
+    printScreen: undefined,
+    releaseFilmUses: undefined,
+    cameraStatus: undefined,
     attributes: undefined,
     updatedAt: undefined,
   };
@@ -125,9 +138,13 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       progressPercent: progressPercent(info),
       remainingMs: remainingMs(info),
       errorNumber: info.errorNumber,
+      errorMessage: printErrorMessage(info.errorNumber) ?? null,
       taskId: info.taskId,
     };
     this.view.releaseFilmState = status.devicesStatus.releaseFilmState;
+    this.view.printScreen = status.printScreen;
+    this.view.releaseFilmUses = status.releaseFilmUses;
+    this.view.cameraStatus = status.cameraStatus;
 
     const previous = this.lastPrintStatus;
     const previousTask = this.lastTaskId;
