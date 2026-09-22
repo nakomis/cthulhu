@@ -1,11 +1,13 @@
 import { StartPrintError, UploadError, uploadFile } from '@cthulhu/sdcp';
 import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { CameraProxy } from './camera.js';
 import type { Config } from './config.js';
 import type { History } from './history.js';
 import type { PrinterService } from './printer.js';
 import type { PrinterStore } from './store.js';
+import { registerWs } from './ws.js';
 
 export interface BuildAppOptions {
   /** Directory of the built SPA, served at the root. */
@@ -21,6 +23,14 @@ export interface BuildAppOptions {
 export function buildApp(options: BuildAppOptions): FastifyInstance {
   const { config, store, printer, history, camera, webRoot, logger = false } = options;
   const app = Fastify({ logger });
+
+  // Registered before the routes that use it, and before the static handler,
+  // so /api/ws is claimed by the websocket plugin rather than the SPA
+  // catch-all.
+  app.register(fastifyWebsocket);
+  app.register(async (instance) => {
+    registerWs(instance, { store });
+  });
 
   // Scraped by the Datadog agent on Leia, which autodiscovers containers.
   app.get('/health', async () => ({
@@ -129,7 +139,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     done(null, body),
   );
 
-  app.post('/api/upload', async (request, reply) => {
+  app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {
     const filename = request.headers['x-filename'];
     if (typeof filename !== 'string' || filename.length === 0) {
       return reply.code(400).send({ error: 'x-filename header is required' });

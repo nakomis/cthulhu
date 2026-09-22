@@ -1,42 +1,40 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api, type PrinterView } from './api.js';
 import { Camera } from './Camera.js';
 import { Files } from './Files.js';
 import { formatEta, isActive, releaseFilmLabel } from './status.js';
+import { useStatus } from './useStatus.js';
 
 export interface AppProps {
   /** Injected in tests; defaults to the real API. */
   fetchStatus?: () => Promise<PrinterView>;
   pollMs?: number;
+  socketFactory?: (url: string) => WebSocket;
 }
 
-export function App({ fetchStatus = api.status, pollMs = 2000 }: AppProps) {
-  const [view, setView] = useState<PrinterView | undefined>();
-  const [error, setError] = useState<string | undefined>();
+export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: AppProps) {
   const [busy, setBusy] = useState(false);
-
-  const refresh = useCallback(async () => {
-    try {
-      setView(await fetchStatus());
-      setError(undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [fetchStatus]);
-
-  useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), pollMs);
-    return () => clearInterval(timer);
-  }, [refresh, pollMs]);
+  const [actionError, setActionError] = useState<string | undefined>();
+  const {
+    view,
+    error: feedError,
+    live,
+    refresh,
+  } = useStatus({
+    fetchStatus,
+    pollMs,
+    ...(socketFactory ? { socketFactory } : {}),
+  });
+  const error = actionError ?? feedError;
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
+    setActionError(undefined);
     try {
       await fn();
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -61,6 +59,11 @@ export function App({ fetchStatus = api.status, pollMs = 2000 }: AppProps) {
           {view ? (
             <span className={view.connected ? 'text-tentacle' : 'text-amber-400'}>
               {view.connected ? ' · connected' : ' · disconnected'}
+            </span>
+          ) : null}
+          {view && !live ? (
+            <span className="text-slate-500" title="WebSocket unavailable; falling back to polling">
+              {' · polling'}
             </span>
           ) : null}
         </p>

@@ -37,6 +37,15 @@ export interface Config {
    * from thin documentation, so it must be overridable without a rebuild.
    */
   uploadPort: number;
+  /**
+   * Maximum upload size, in bytes.
+   *
+   * Fastify's default body limit is ONE MEGABYTE, which silently rejects
+   * every real sliced file with a 413 - after nginx has already accepted it,
+   * because the vhost allows 1024M. A 13 MB hanger found this; a full plate
+   * of keycaps runs to hundreds of megabytes.
+   */
+  maxUploadBytes: number;
   /** Directory of the built SPA. Unset in dev, where Vite serves it. */
   webRoot: string | undefined;
 }
@@ -87,6 +96,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cameraEnabled: boolFromEnv(env, 'CAMERA_ENABLED', true),
     cameraUrl: env.CAMERA_URL || 'http://{ip}:3031/video',
     uploadPort: intFromEnv(env, 'UPLOAD_PORT', 3030),
+    maxUploadBytes: intFromEnv(env, 'MAX_UPLOAD_BYTES', 1024 * 1024 * 1024),
     webRoot: env.WEB_ROOT || undefined,
   };
 

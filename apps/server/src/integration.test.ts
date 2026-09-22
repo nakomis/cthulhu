@@ -236,3 +236,51 @@ describe('bugs found by running the stack live against the fake printer', () => 
     expect(prints).toHaveLength(1);
   });
 });
+
+describe('uploading a realistically-sized file', () => {
+  it("accepts a file far larger than Fastify's 1MB default body limit", async () => {
+    // Found with a real 13MB sliced hanger. Fastify defaults bodyLimit to ONE
+    // MEGABYTE, so every genuine sliced file was rejected with a 413 - and
+    // only AFTER nginx had accepted it, because the vhost allows 1024M. A
+    // small synthetic fixture sails through and hides this completely.
+    await settle();
+    const fourMegabytes = Buffer.alloc(4 * 1024 * 1024, 7);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'big.goo' },
+      payload: fourMegabytes,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().size).toBe(fourMegabytes.length);
+  });
+
+  it('computes the MD5 over the whole body, not a truncated prefix', async () => {
+    const { createHash } = await import('node:crypto');
+    await settle();
+    const body = Buffer.alloc(2 * 1024 * 1024, 42);
+    const expected = createHash('md5').update(body).digest('hex');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'md5.goo' },
+      payload: body,
+    });
+
+    expect(res.json().md5).toBe(expected);
+  });
+
+  it('still rejects a non-.goo/.ctb file, however large', async () => {
+    await settle();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'model.stl' },
+      payload: Buffer.alloc(1024, 1),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
