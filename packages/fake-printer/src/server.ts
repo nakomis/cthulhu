@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createSocket, type Socket } from 'node:dgram';
 import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -14,6 +14,7 @@ import {
 import { type WebSocket, WebSocketServer } from 'ws';
 import { MARS_5_ULTRA, type PrinterFixture } from './fixtures.js';
 import { PrinterState } from './state.js';
+import { type FrameSource, frameSourceFromEnv } from './video.js';
 
 export interface FakePrinterOptions {
   fixture?: PrinterFixture;
@@ -28,10 +29,24 @@ export interface FakePrinterOptions {
   msPerLayer?: number;
   /** Files the printer will accept a print command for. */
   files?: string[];
+  /**
+   * Path to a video to serve as the camera feed. Needs ffmpeg; falls back to
+   * synthetic frames if either is missing, so CI stays hermetic.
+   */
+  videoPath?: string;
+  log?: (msg: string) => void;
+}
+
+export interface UploadedFile {
+  filename: string;
+  size: number;
+  md5: string;
 }
 
 export interface FakePrinter {
   readonly wsPort: number;
+  /** Files uploaded over the HTTP transfer interface during this run. */
+  readonly uploads: Map<string, UploadedFile>;
   readonly mainboardId: string;
   readonly state: PrinterState;
   /** Advance the simulation manually; tests use this instead of waiting. */
@@ -55,9 +70,84 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   const msPerLayer = options.msPerLayer ?? 300;
   const knownFiles = new Set(options.files ?? ['cthulhu.goo', 'test.goo']);
   const state = new PrinterState(fixture);
+  let videoEnabled = true;
+  let videoConnections = 0;
+  const log = options.log ?? (() => {});
+  const frames: FrameSource = await frameSourceFromEnv(options.videoPath, log);
   const mainboardId = fixture.mainboardId;
 
-  const http: HttpServer = createServer();
+  const uploads = new Map<string, UploadedFile>();
+
+  const http: HttpServer = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+
+    // ---- MJPEG camera -----------------------------------------------------
+    // A real multipart/x-mixed-replace stream, so the proxy in the server is
+    // exercised for real rather than against a hand-rolled fake stream.
+    // The frames are not valid JPEGs; the proxy does not decode them.
+    if (url.pathname === '/video') {
+      if (!videoEnabled) {
+        res.writeHead(503).end('video stream disabled');
+        return;
+      }
+      // MaximumVideoStreamAllowed is 1. Refuse a second viewer the way the
+      // real printer would, so the proxy's multiplexing is actually required.
+      if (videoConnections >= 1) {
+        res.writeHead(503).end('maximum video streams reached');
+        return;
+      }
+      videoConnections += 1;
+      res.writeHead(200, {
+        'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
+        'Cache-Control': 'no-store',
+      });
+      const timer = setInterval(() => {
+        const body = frames.next();
+        res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${body.length}\r\n\r\n`);
+        res.write(body);
+        res.write('\r\n');
+      }, 250);
+      const stop = () => {
+        clearInterval(timer);
+        videoConnections = Math.max(0, videoConnections - 1);
+      };
+      req.on('close', stop);
+      res.on('close', stop);
+      return;
+    }
+
+    // ---- File upload ------------------------------------------------------
+    // The community docs are thinnest here. This models the shape the vendor
+    // slicer is believed to use - a POST with the file body and an MD5 to
+    // check against - so CTHU-7 can be built now and corrected against a real
+    // capture later.
+    if (url.pathname === '/uploadFile/upload' && req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const filename =
+          url.searchParams.get('filename') ??
+          (req.headers['x-filename'] as string | undefined) ??
+          'unnamed.goo';
+        const claimed = url.searchParams.get('md5') ?? (req.headers['x-md5'] as string | undefined);
+        const actual = createHash('md5').update(body).digest('hex');
+
+        if (claimed && claimed !== actual) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'md5 mismatch', expected: actual }));
+          return;
+        }
+        uploads.set(filename, { filename, size: body.length, md5: actual });
+        knownFiles.add(filename);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, filename, md5: actual, size: body.length }));
+      });
+      return;
+    }
+
+    res.writeHead(404).end();
+  });
   const wss = new WebSocketServer({ server: http, path: '/websocket' });
   const clients = new Set<WebSocket>();
 
@@ -190,6 +280,12 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           );
           return;
 
+        case Cmd.SetVideoStream: {
+          videoEnabled = payload.Enable === 1 || payload.Enable === true;
+          ws.send(JSON.stringify(ackFrame(requestId, cmd, 0)));
+          return;
+        }
+
         default:
           // Unknown commands are acknowledged rather than ignored, so a client
           // waiting on a RequestID does not hang.
@@ -226,6 +322,7 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
 
   return {
     wsPort,
+    uploads,
     mainboardId,
     state,
     tick: (deltaMs: number) => state.tick(deltaMs),

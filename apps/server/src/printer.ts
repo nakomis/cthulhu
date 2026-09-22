@@ -99,6 +99,12 @@ export class PrinterService {
     });
     client.on('attributes', (attrs) => {
       this.store.applyAttributes(attrs);
+      // The client adopts the mainboard id from attributes when it started
+      // empty (pinned IP, discovery off). Push it through to the store too,
+      // or /api/status keeps reporting the empty string it connected with.
+      if (client.mainboardId) {
+        this.store.setConnection(true, target.address, client.mainboardId);
+      }
     });
     client.on('open', () => {
       this.store.setConnection(true, target.address, target.mainboardId);
@@ -110,6 +116,10 @@ export class PrinterService {
     });
     client.on('error', (err) => {
       this.log(`printer error: ${err.message}`);
+    });
+
+    this.store.on('printStarted', ({ filename, taskId, totalLayer }) => {
+      this.history?.startPrint(taskId, filename, totalLayer);
     });
 
     this.store.on('printFinished', ({ filename, taskId }) => {

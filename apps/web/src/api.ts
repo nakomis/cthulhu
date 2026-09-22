@@ -37,7 +37,34 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface PrinterFile {
+  name: string;
+}
+
 export const api = {
+  files: async (): Promise<PrinterFile[]> => {
+    const res = await fetch('/api/files');
+    if (!res.ok) return [];
+    // The ack nests the payload under Data, but how deeply is exactly the sort
+    // of thing the FDM-derived docs get wrong, so accept either shape rather
+    // than silently rendering an empty list.
+    const body = (await res.json()) as {
+      Data?: { FileList?: PrinterFile[]; Data?: { FileList?: PrinterFile[] } };
+    };
+    return body.Data?.FileList ?? body.Data?.Data?.FileList ?? [];
+  },
+  startPrint: (filename: string) =>
+    fetch('/api/print', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    }).then((r) => json(r)),
+  upload: (file: File) =>
+    fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
+      body: file,
+    }).then((r) => json<{ filename: string; md5: string; size: number }>(r)),
   status: () => fetch('/api/status').then((r) => json<PrinterView>(r)),
   history: () => fetch('/api/history').then((r) => json<{ prints: PrintRecord[] }>(r)),
   pause: () => fetch('/api/control/pause', { method: 'POST' }).then((r) => json(r)),

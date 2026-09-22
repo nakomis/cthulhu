@@ -25,6 +25,20 @@ export interface Config {
   pushoverAppToken: string | undefined;
   /** MJPEG camera stream on the printer. */
   cameraEnabled: boolean;
+  /**
+   * Full URL of the printer's MJPEG stream. The community docs barely cover
+   * the video stream, so the default below is a GUESS and must be overridable
+   * without a rebuild - the fake printer, for instance, serves it on the same
+   * port as the WebSocket. Use {ip} as a placeholder for the printer address.
+   */
+  cameraUrl: string;
+  /**
+   * Port serving the printer's HTTP file-transfer interface. Another guess
+   * from thin documentation, so it must be overridable without a rebuild.
+   */
+  uploadPort: number;
+  /** Directory of the built SPA. Unset in dev, where Vite serves it. */
+  webRoot: string | undefined;
 }
 
 export class ConfigError extends Error {}
@@ -71,6 +85,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pushoverUserKey,
     pushoverAppToken,
     cameraEnabled: boolFromEnv(env, 'CAMERA_ENABLED', true),
+    cameraUrl: env.CAMERA_URL || 'http://{ip}:3031/video',
+    uploadPort: intFromEnv(env, 'UPLOAD_PORT', 3030),
+    webRoot: env.WEB_ROOT || undefined,
   };
 
   if (!config.printerIp && !config.discoveryEnabled) {

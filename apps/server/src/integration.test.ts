@@ -179,3 +179,60 @@ describe('file listing', () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe('bugs found by running the stack live against the fake printer', () => {
+  it('learns the mainboardId from attributes when only a pinned IP is configured', async () => {
+    // With PRINTER_IP set and discovery off there is nothing to learn the id
+    // from up front, so it starts empty. Every request envelope carries
+    // MainboardID, and a real printer is unlikely to be as forgiving about an
+    // empty one as the fake is.
+    await settle();
+    expect(service.client?.mainboardId).toBe(printer.mainboardId);
+    expect(service.client?.mainboardId).not.toBe('');
+  });
+
+  it('records history with the REAL taskId, not an empty string', async () => {
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/print', payload: { filename: 'cthulhu.goo' } });
+    // The taskId does not exist until the next status push, so recording at
+    // the moment of the REST call captured "".
+    await settle();
+
+    const prints = (await app.inject({ method: 'GET', url: '/api/history' })).json().prints;
+    expect(prints).toHaveLength(1);
+    expect(prints[0].taskId).toBeTruthy();
+    expect(prints[0].taskId).not.toBe('');
+    expect(prints[0].totalLayer).toBe(120);
+  });
+
+  it('records a print started on the machine itself, not just via REST', async () => {
+    // printStarted is edge-triggered on the taskId changing, so a print begun
+    // from the printer's own touchscreen lands in history too.
+    await settle();
+    printer.state.startPrint({
+      filename: 'touchscreen.goo',
+      totalLayer: 42,
+      msPerLayer: 20,
+      taskId: 'from-the-machine',
+    });
+    printer.pushStatus();
+    await settle();
+
+    const prints = (await app.inject({ method: 'GET', url: '/api/history' })).json().prints;
+    expect(prints[0].filename).toBe('touchscreen.goo');
+    expect(prints[0].taskId).toBe('from-the-machine');
+  });
+
+  it('does not create a duplicate history row for the same print', async () => {
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/print', payload: { filename: 'cthulhu.goo' } });
+    await settle();
+    // Many status pushes follow, all carrying the same taskId.
+    printer.pushStatus();
+    printer.pushStatus();
+    await settle();
+
+    const prints = (await app.inject({ method: 'GET', url: '/api/history' })).json().prints;
+    expect(prints).toHaveLength(1);
+  });
+});

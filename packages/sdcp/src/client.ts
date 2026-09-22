@@ -86,7 +86,14 @@ export interface SdcpClientEvents {
  */
 export class SdcpClient extends EventEmitter<SdcpClientEvents> {
   readonly address: string;
-  readonly mainboardId: string;
+  /**
+   * Not readonly: with a pinned PRINTER_IP and discovery disabled there is no
+   * way to know the mainboard id up front, so it starts empty and is adopted
+   * from the first attributes message. Every request envelope carries it, and
+   * a real printer is unlikely to be as forgiving about an empty one as the
+   * fake is.
+   */
+  mainboardId: string;
   private readonly port: number;
   private readonly path: string;
   private readonly heartbeatMs: number;
@@ -246,6 +253,9 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
     if (topic.startsWith('sdcp/attributes/')) {
       const attributes = parseAttributes(frame);
       this.lastAttributes = attributes;
+      if (!this.mainboardId && attributes.mainboardId) {
+        this.mainboardId = attributes.mainboardId;
+      }
       this.emit('attributes', attributes);
       return;
     }

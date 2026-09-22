@@ -80,7 +80,9 @@ describe('dashboard', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
 
     expect(confirmSpy).toHaveBeenCalled();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    // Assert specifically that STOP was not requested. A bare
+    // not.toHaveBeenCalled() is wrong now that the file list also fetches.
+    expect(fetchSpy).not.toHaveBeenCalledWith('/api/control/stop', expect.anything());
   });
 
   it('stops when the confirmation is accepted', async () => {

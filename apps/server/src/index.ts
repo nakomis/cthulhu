@@ -50,10 +50,23 @@ async function main(): Promise<void> {
         openUpstream: async () => {
           const address = store.snapshot().address ?? config.printerIp;
           if (!address) throw new Error('No printer address for the camera stream');
-          const res = await fetch(`http://${address}:3031/video`);
-          if (!res.ok || !res.body) throw new Error(`Camera upstream returned ${res.status}`);
+          const url = config.cameraUrl.replace('{ip}', address);
+          // The controller is the only thing that actually closes the
+          // connection; destroying the Readable does not.
+          const controller = new AbortController();
+          const res = await fetch(url, { signal: controller.signal });
+          if (!res.ok || !res.body) {
+            controller.abort();
+            throw new Error(`Camera upstream returned ${res.status}`);
+          }
           const { Readable } = await import('node:stream');
-          return Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+          return {
+            stream: Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
+            abort: () => controller.abort(),
+          };
+        },
+        onActive: async () => {
+          await printer.client?.setVideoStream(true).catch(() => {});
         },
         // Release the single slot so the Elegoo app can still connect.
         onIdle: async () => {
@@ -66,6 +79,7 @@ async function main(): Promise<void> {
     config,
     store,
     printer,
+    ...(config.webRoot ? { webRoot: config.webRoot } : {}),
     ...(history ? { history } : {}),
     ...(camera ? { camera } : {}),
     logger: true,

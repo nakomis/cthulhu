@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type PrinterView } from './api.js';
+import { Camera } from './Camera.js';
+import { Files } from './Files.js';
 import { formatEta, isActive, releaseFilmLabel } from './status.js';
 
 export interface AppProps {
@@ -118,6 +120,10 @@ export function App({ fetchStatus = api.status, pollMs = 2000 }: AppProps) {
           <h2 className="text-xs uppercase tracking-wider text-slate-400">Release film</h2>
           <p className="mt-1 text-lg">{releaseFilmLabel(view?.releaseFilmState)}</p>
         </section>
+
+        <Camera />
+
+        <Files busy={active} onChanged={() => void refresh()} />
 
         <section className="flex gap-2">
           <button
