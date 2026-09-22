@@ -1,0 +1,34 @@
+{
+  "name": "@cthulhu/infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CDK infrastructure for Cthulhu (GitHub CI role only; the app runs on Luke)",
+  "license": "CC0-1.0",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "cdk": "cdk",
+    "deploy-sandbox": "NPM_ENVIRONMENT=sandbox cdk deploy --profile nakom.is-sandbox --all --require-approval never",
+    "deploy-prod": "NPM_ENVIRONMENT=prod cdk deploy --profile nakom.is-admin --all --require-approval never",
+    "ci-synth-sandbox": "NPM_ENVIRONMENT=sandbox cdk synth",
+    "ci-deploy-sandbox": "NPM_ENVIRONMENT=sandbox cdk deploy --all --require-approval never --output cdk-deploy.out",
+    "ci-deploy-prod": "NPM_ENVIRONMENT=prod cdk deploy --all --require-approval never --output cdk-deploy.out",
+    "ci-synth-prod": "NPM_ENVIRONMENT=prod cdk synth"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.16.2",
+    "@swc/jest": "^0.2.39",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.6.2",
+    "aws-cdk": "^2.1142.0",
+    "jest": "^30.5.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.270.0",
+    "constructs": "^10.8.1"
+  }
+}

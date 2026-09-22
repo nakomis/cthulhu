@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+@theme {
+  --color-abyss: #0d1b2e;
+  --color-tentacle: #2ecc8f;
+}

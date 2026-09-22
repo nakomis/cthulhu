@@ -1,0 +1,22 @@
+packages:
+  - packages/*
+  - apps/*
+  - infra
+
+# pnpm 11 blocks dependency install scripts by default; a clean CI install fails
+# with ERR_PNPM_IGNORED_BUILDS for anything needing a postinstall. It usually
+# passes locally because node_modules is already populated, so this normally
+# only bites in CI.
+# Note the key changed: pnpm 10 called it onlyBuiltDependencies and took a list.
+# Keep this list complete BEFORE running install - pnpm appends its own
+# "set this to true or false" placeholder otherwise, which duplicates the key
+# and makes the file invalid YAML.
+allowBuilds:
+  '@parcel/watcher': true
+  '@swc/core': true
+  better-sqlite3: true
+  esbuild: true
+  unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - jsdom@30.1.1
