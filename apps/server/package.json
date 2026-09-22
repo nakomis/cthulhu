@@ -1,0 +1,27 @@
+{
+  "name": "@cthulhu/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cthulhu print server: REST + WebSocket + camera proxy",
+  "license": "CC0-1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "node --watch src/index.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@cthulhu/sdcp": "workspace:*",
+    "fastify": "^5.12.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@vitest/coverage-v8": "^5.0.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

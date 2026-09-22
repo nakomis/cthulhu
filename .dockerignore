@@ -1,0 +1,31 @@
+# Docker does NOT read .gitignore. Without this file, `COPY . .` drags the
+# host's node_modules into the image on top of the ones installed in the deps
+# stage - macOS-built native binaries and all - and pnpm then fails its
+# dependency status check. It also makes the build context enormous.
+node_modules
+**/node_modules
+
+# Build output, rebuilt inside the image
+dist
+**/dist
+*.tsbuildinfo
+
+.git
+.github
+.githooks
+
+coverage
+**/coverage
+
+cdk.out
+**/cdk.out
+*.out
+
+PLAN.md
+docs
+*.md
+!README.md
+
+.env
+**/.env
+.DS_Store

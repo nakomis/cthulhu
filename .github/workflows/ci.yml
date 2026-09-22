@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Check out the post-merge state on PRs so CI validates what will actually land
+# on main, not just the branch tip. Falls back to the SHA on push.
+env:
+  CHECKOUT_REF: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+  AWS_REGION: eu-west-2
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      # pnpm/action-setup MUST come before setup-node: setup-node's cache keys
+      # off the pnpm store, so the order matters.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '25'
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Test
+        run: pnpm -r test
+
+      - name: Build
+        run: pnpm -r build
+
+  synth:
+    name: CDK synth
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: package.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '25'
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure AWS credentials (sandbox)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_SANDBOX_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: CDK synth (sandbox)
+        run: pnpm ci-synth-sandbox
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+
+      # Only builds the image - Cthulhu is deployed to Luke by Ansible from the
+      # home-servers repo, not from here. See CTHU-10.
+      - name: Build image
+        run: docker build -f docker/Dockerfile -t cthulhu:ci .
+
+  ci-status:
+    name: CI Status
+    runs-on: ubuntu-latest
+    needs: [build, synth, docker]
+    if: always()
+    steps:
+      - name: Fail if any job failed
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "job results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "A required job did not succeed."
+              exit 1
+            fi
+          done
+          echo "All required jobs succeeded."

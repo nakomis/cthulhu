@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Planning
+PLAN.md
+
+# Coverage
+coverage/
+lcov.info
+
+# CDK
+cdk.out/
+*.out/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Recorded printer traffic that is too large or machine-specific to commit.
+# Curated fixtures under packages/sdcp/fixtures/ ARE committed - they are the
+# whole point of milestone 1.
+captures/
+
+# Local SQLite databases
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp
+
+# Emitted TypeScript artefacts. A `tsc` without outDir drops these next to the
+# sources, where Biome then lints them and Vitest runs the stale .js copies of
+# test files alongside the real .ts ones.
+apps/web/src/**/*.js
+apps/web/src/**/*.d.ts
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
+infra/bin/**/*.js
+infra/lib/**/*.js
+infra/test/**/*.js
+infra/**/*.d.ts
