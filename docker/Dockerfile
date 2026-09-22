@@ -7,7 +7,11 @@
 FROM node:25-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+# Node 25 unbundled corepack, so it is NOT present in the image and
+# `corepack enable` fails with "corepack: not found". Installing it explicitly
+# keeps pnpm's version driven by "packageManager" in package.json rather than
+# hardcoded here, where it would silently drift.
+RUN npm install -g corepack@latest && corepack enable
 WORKDIR /app
 
 # ---- dependencies -----------------------------------------------------------
