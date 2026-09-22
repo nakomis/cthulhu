@@ -1,17 +1,109 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import type { PrinterView } from './api.js';
 
-describe('App', () => {
-  it('shows the printer name and idle status by default', () => {
-    render(<App />);
-    expect(screen.getByRole('heading', { name: 'Cthulhu' })).toBeInTheDocument();
-    expect(screen.getByText('Elegoo Mars 5 Ultra')).toBeInTheDocument();
-    expect(screen.getByText('Idle')).toBeInTheDocument();
+const view = (
+  overrides: Partial<PrinterView['print']> = {},
+  rest: Partial<PrinterView> = {},
+): PrinterView => ({
+  connected: true,
+  address: '172.29.0.50',
+  mainboardId: 'mb',
+  machineStatus: [1],
+  print: {
+    status: 3,
+    statusLabel: 'Exposing',
+    filename: 'cthulhu.goo',
+    currentLayer: 60,
+    totalLayer: 120,
+    progressPercent: 50,
+    remainingMs: 7_500_000,
+    errorNumber: 0,
+    taskId: 't1',
+    ...overrides,
+  },
+  releaseFilmState: 1,
+  attributes: { machineName: 'ELEGOO Mars 5 Ultra' },
+  updatedAt: new Date().toISOString(),
+  ...rest,
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('dashboard', () => {
+  it('renders live status, layer and ETA', async () => {
+    render(<App fetchStatus={async () => view()} pollMs={100_000} />);
+
+    expect(await screen.findByText('Exposing')).toBeInTheDocument();
+    expect(screen.getByText('cthulhu.goo')).toBeInTheDocument();
+    expect(screen.getByText('60 / 120')).toBeInTheDocument();
+    expect(screen.getByText('2h 05m')).toBeInTheDocument();
   });
 
-  it('renders the supplied status code', () => {
-    render(<App statusCode={3} />);
-    expect(screen.getByText('Exposing')).toBeInTheDocument();
+  it('shows a progress bar with accessible values', async () => {
+    render(<App fetchStatus={async () => view()} pollMs={100_000} />);
+    const bar = await screen.findByRole('progressbar');
+    expect(bar).toHaveAttribute('aria-valuenow', '50');
+  });
+
+  it('surfaces release film health, which matters on an SLA machine', async () => {
+    render(<App fetchStatus={async () => view({}, { releaseFilmState: 3 })} pollMs={100_000} />);
+    expect(await screen.findByText('Check film (3)')).toBeInTheDocument();
+  });
+
+  it('shows disconnected rather than pretending all is well', async () => {
+    render(<App fetchStatus={async () => view({}, { connected: false })} pollMs={100_000} />);
+    expect(await screen.findByText(/disconnected/)).toBeInTheDocument();
+  });
+
+  it('shows an error when the API is unreachable', async () => {
+    render(
+      <App
+        fetchStatus={async () => {
+          throw new Error('boom');
+        }}
+        pollMs={100_000}
+      />,
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('boom');
+  });
+
+  it('does NOT stop the print when the confirmation is dismissed', async () => {
+    // Stopping abandons hours of work; a mis-click must not do it.
+    const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(false);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    render(<App fetchStatus={async () => view()} pollMs={100_000} />);
+    await screen.findByText('Exposing');
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('stops when the confirmation is accepted', async () => {
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('{}', { status: 200 }));
+
+    render(<App fetchStatus={async () => view()} pollMs={100_000} />);
+    await screen.findByText('Exposing');
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith('/api/control/stop', expect.anything()),
+    );
+  });
+
+  it('disables Pause when nothing is printing', async () => {
+    render(
+      <App fetchStatus={async () => view({ status: 0, statusLabel: 'Idle' })} pollMs={100_000} />,
+    );
+    await screen.findByText('Idle');
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled();
   });
 });
