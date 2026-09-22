@@ -43,6 +43,11 @@ export const PRINT_STATUS_LABELS: Record<number, string> = {
   [PrintStatus.FileChecking]: 'Checking file',
 };
 
+/** A print that has ended, one way or another. */
+function isTerminal(code: number | undefined): boolean {
+  return code === PrintStatus.Complete || code === PrintStatus.Stopped || code === PrintStatus.Idle;
+}
+
 export function printStatusLabel(code: number | undefined): string {
   if (code === undefined) return 'Unknown';
   // Never invent a label. The docs are FDM; an SLA machine may send codes we
@@ -132,7 +137,12 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
 
     // A new, non-empty taskId means a print has begun - whether we started it
     // over REST or somebody pressed print on the machine itself.
-    if (info.taskId && info.taskId !== previousTask) {
+    //
+    // TERMINAL states are excluded. On connecting to a printer that is still
+    // showing the LAST print's Complete/Stopped, the first status frame
+    // carries an unseen taskId, and without this guard it would be recorded
+    // as a brand new print that started and ended in the same millisecond.
+    if (info.taskId && info.taskId !== previousTask && !isTerminal(info.status)) {
       this.emit('printStarted', {
         filename: info.filename,
         taskId: info.taskId,
@@ -140,7 +150,15 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       });
     }
 
-    if (info.status === PrintStatus.Complete && previous !== PrintStatus.Complete) {
+    // Only on a transition we actually WITNESSED. `previous === undefined`
+    // means this is the first frame since connecting, so a printer sitting at
+    // Complete from an earlier print would otherwise fire a "Print finished"
+    // notification on every server restart - for a print we never saw run.
+    if (
+      info.status === PrintStatus.Complete &&
+      previous !== undefined &&
+      previous !== PrintStatus.Complete
+    ) {
       this.emit('printFinished', { filename: info.filename, taskId: info.taskId });
     }
   }
