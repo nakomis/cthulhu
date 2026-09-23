@@ -36,7 +36,16 @@ export class PushoverNotifier {
         method: 'POST',
         body,
       });
-      return res.ok;
+      // Pushover answers 200 with {"status":0,...} for a bad token, so res.ok
+      // alone is not enough - it would report success for credentials that
+      // silently deliver nothing.
+      if (!res.ok) return false;
+      try {
+        const payload = (await res.json()) as { status?: number };
+        return payload.status === 1;
+      } catch {
+        return false;
+      }
     } catch {
       return false;
     }

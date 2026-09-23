@@ -8,11 +8,13 @@ import {
   DISCOVERY_PORT,
   HEARTBEAT_REQUEST,
   HEARTBEAT_RESPONSE,
+  MAX_VIDEO_STREAMS,
   StartPrintAck,
   topics,
 } from '@cthulhu/sdcp';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { MARS_5_ULTRA, type PrinterFixture } from './fixtures.js';
+import { parseMultipart } from './multipart.js';
 import { PrinterState } from './state.js';
 import { type FrameSource, frameSourceFromEnv } from './video.js';
 
@@ -77,6 +79,8 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   const mainboardId = fixture.mainboardId;
 
   const uploads = new Map<string, UploadedFile>();
+  // In-flight chunked uploads, keyed by the Uuid the client keeps constant.
+  const partials = new Map<string, { filename: string; totalSize: number; received: Buffer }>();
 
   const http: HttpServer = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -117,31 +121,90 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
     }
 
     // ---- File upload ------------------------------------------------------
-    // The community docs are thinnest here. This models the shape the vendor
-    // slicer is believed to use - a POST with the file body and an MD5 to
-    // check against - so CTHU-7 can be built now and corrected against a real
-    // capture later.
+    // Implements the OFFICIAL spec, not the shape an earlier guess used:
+    // multipart/form-data in 1 MB packets carrying Check / Offset / Uuid /
+    // TotalSize / File, with the whole-file MD5 in an S-File-MD5 header.
+    // Reassembles by offset, because that is what the printer does and it is
+    // why offset mismatch has its own error code.
     if (url.pathname === '/uploadFile/upload' && req.method === 'POST') {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
-        const body = Buffer.concat(chunks);
-        const filename =
-          url.searchParams.get('filename') ??
-          (req.headers['x-filename'] as string | undefined) ??
-          'unnamed.goo';
-        const claimed = url.searchParams.get('md5') ?? (req.headers['x-md5'] as string | undefined);
-        const actual = createHash('md5').update(body).digest('hex');
+        const fail = (code: string, message: string) => {
+          // The endpoint answers 200 with success:false for its own errors.
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              code,
+              messages: [{ field: 'File', message }],
+              data: null,
+              success: false,
+            }),
+          );
+        };
 
-        if (claimed && claimed !== actual) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: 'md5 mismatch', expected: actual }));
+        const raw = Buffer.concat(chunks);
+        const contentType = String(req.headers['content-type'] ?? '');
+        const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType);
+        const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2];
+        if (!boundary) {
+          fail('-4', 'not multipart/form-data');
           return;
         }
-        uploads.set(filename, { filename, size: body.length, md5: actual });
-        knownFiles.add(filename);
+
+        const parts = parseMultipart(raw, boundary);
+        const field = (name: string) =>
+          parts.find((p) => p.name === name && !p.filename)?.data.toString('utf8');
+        const filePart = parts.find((p) => p.name === 'File');
+
+        const offset = Number(field('Offset'));
+        const totalSize = Number(field('TotalSize'));
+        const uuid = field('Uuid') ?? '';
+        const check = field('Check') === '1';
+        const claimedMd5 = req.headers['s-file-md5'] as string | undefined;
+        const filename = filePart?.filename ?? 'unnamed.goo';
+
+        if (!Number.isInteger(offset) || offset < 0) {
+          fail('-1', 'illegal file offset value (less than 0)');
+          return;
+        }
+        if (!filePart) {
+          fail('-3', 'no File part in the request');
+          return;
+        }
+
+        const existing = partials.get(uuid) ?? { filename, totalSize, received: Buffer.alloc(0) };
+        // Reassembly is strictly sequential; a gap means the client and the
+        // printer disagree about what has been received.
+        if (offset !== existing.received.length) {
+          fail(
+            '-2',
+            `file offset does not match the current file (expected ${existing.received.length}, got ${offset})`,
+          );
+          return;
+        }
+
+        existing.filename = filename;
+        existing.totalSize = totalSize;
+        existing.received = Buffer.concat([existing.received, filePart.data]);
+        partials.set(uuid, existing);
+
+        const complete = existing.received.length >= totalSize;
+        if (complete) {
+          partials.delete(uuid);
+          const actual = createHash('md5').update(existing.received).digest('hex');
+          if (check && claimedMd5 && claimedMd5 !== actual) {
+            // ErrorNumber 1 in PrintInfo is "MD5 Check Failed"; refusing here
+            // is the transfer-time equivalent.
+            fail('-4', `md5 mismatch (expected ${actual})`);
+            return;
+          }
+          uploads.set(filename, { filename, size: existing.received.length, md5: actual });
+          knownFiles.add(filename);
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, filename, md5: actual, size: body.length }));
+        res.end(JSON.stringify({ code: '000000', messages: null, data: {}, success: true }));
       });
       return;
     }
@@ -281,8 +344,31 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           return;
 
         case Cmd.SetVideoStream: {
-          videoEnabled = payload.Enable === 1 || payload.Enable === true;
-          ws.send(JSON.stringify(ackFrame(requestId, cmd, 0)));
+          const enable = payload.Enable === 1 || payload.Enable === true;
+          // Per the official spec, Cmd 386 answers with a VideoUrl and its own
+          // ack codes: 1 exceeded the stream limit, 2 no camera, 3 unknown.
+          // The real printer returns an RTSP address; this fake serves MJPEG
+          // over HTTP, so it returns that instead and the server consumes
+          // whichever it is given.
+          if (enable && videoConnections >= MAX_VIDEO_STREAMS) {
+            ws.send(JSON.stringify(ackFrame(requestId, cmd, 1)));
+            return;
+          }
+          videoEnabled = enable;
+          ws.send(
+            JSON.stringify({
+              Id: randomUUID(),
+              Topic: topics.response(mainboardId),
+              Data: {
+                Cmd: cmd,
+                Data: enable
+                  ? { Ack: 0, VideoUrl: `http://127.0.0.1:${wsPort}/video` }
+                  : { Ack: 0 },
+                RequestID: requestId,
+                MainboardID: mainboardId,
+              },
+            }),
+          );
           return;
         }
 

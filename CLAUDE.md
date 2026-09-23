@@ -5,12 +5,22 @@ SDCP over the LAN. Web UI plus REST API, deployed as Docker on Luke.
 
 ## The single most important thing
 
-**The community SDCP documentation describes the Centauri Carbon, an FDM
-printer. This is an SLA printer.** Do not write a status parser against those
-docs and assume it is right. Record real traffic from the machine first and
-keep the capture as a test fixture. Temperature fields are expected to be
-absent or meaningless, files are `.goo` not `.gcode`, and status codes may
-differ.
+**Use the official specification, not the community FDM write-up.**
+
+<https://github.com/cbd-tech/SDCP-Smart-Device-Control-Protocol-V3.0.0> —
+CBD-Tech / Chitubox, MIT-licensed, written **for resin printers**. That is the
+authority.
+
+`PLAN.md` cites <https://docs.opencentauri.cc/software/api/>, which describes
+the **Centauri Carbon, an FDM machine**. Much of the early code here was hedged
+against that, and several guesses made from it turned out to be wrong — the
+camera is RTSP not MJPEG, uploads are chunked multipart not a single POST, and
+the temperature fields are `TempOfBox`/`TempTargetBox`, not nozzle and hotbed.
+
+**Still record real traffic before changing a parser.** The spec is generic
+across Chitubox boards and this printer may deviate from it; where the spec and
+a capture disagree, the capture wins. Use `cthulhu-sdcp watch --record` and
+commit the capture as a fixture, so the fake printer replays the real machine.
 
 Three fields are misspelled in the wire format and must be reproduced exactly:
 `CurrenCoord`, `RelaseFilmState`, `MaximumCloudSDCPSercicesAllowed`. Never

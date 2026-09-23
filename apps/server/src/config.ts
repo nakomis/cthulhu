@@ -26,10 +26,14 @@ export interface Config {
   /** MJPEG camera stream on the printer. */
   cameraEnabled: boolean;
   /**
-   * Full URL of the printer's MJPEG stream. The community docs barely cover
-   * the video stream, so the default below is a GUESS and must be overridable
-   * without a rebuild - the fake printer, for instance, serves it on the same
-   * port as the WebSocket. Use {ip} as a placeholder for the printer address.
+   * OVERRIDE for the camera stream URL. Empty by default, which is correct:
+   * the official spec has the printer return an RTSP address from Cmd 386, so
+   * the URL is asked for rather than configured.
+   *
+   * Set it to consume an MJPEG endpoint directly instead - the fake printer
+   * serves one on its own port, and a board that differs from the spec can be
+   * pointed at by hand without a rebuild. `{ip}` is replaced with the printer
+   * address.
    */
   cameraUrl: string;
   /**
@@ -37,6 +41,15 @@ export interface Config {
    * from thin documentation, so it must be overridable without a rebuild.
    */
   uploadPort: number;
+  /**
+   * Maximum upload size, in bytes.
+   *
+   * Fastify's default body limit is ONE MEGABYTE, which silently rejects
+   * every real sliced file with a 413 - after nginx has already accepted it,
+   * because the vhost allows 1024M. A 13 MB hanger found this; a full plate
+   * of keycaps runs to hundreds of megabytes.
+   */
+  maxUploadBytes: number;
   /** Directory of the built SPA. Unset in dev, where Vite serves it. */
   webRoot: string | undefined;
 }
@@ -85,8 +98,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pushoverUserKey,
     pushoverAppToken,
     cameraEnabled: boolFromEnv(env, 'CAMERA_ENABLED', true),
-    cameraUrl: env.CAMERA_URL || 'http://{ip}:3031/video',
+    cameraUrl: env.CAMERA_URL || '',
     uploadPort: intFromEnv(env, 'UPLOAD_PORT', 3030),
+    maxUploadBytes: intFromEnv(env, 'MAX_UPLOAD_BYTES', 1024 * 1024 * 1024),
     webRoot: env.WEB_ROOT || undefined,
   };
 

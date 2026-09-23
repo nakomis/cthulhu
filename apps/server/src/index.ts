@@ -4,6 +4,7 @@ import { ConfigError, loadConfig } from './config.js';
 import { History } from './history.js';
 import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
 import { PrinterService } from './printer.js';
+import { openRtspAsMjpeg } from './rtsp.js';
 import { PrinterStore } from './store.js';
 
 async function main(): Promise<void> {
@@ -47,25 +48,47 @@ async function main(): Promise<void> {
 
   const camera = config.cameraEnabled
     ? new CameraProxy({
+        // The stream URL comes from Cmd 386, not from configuration: the
+        // official spec has the printer hand it back rather than exposing it
+        // at a fixed path. CAMERA_URL remains as an override for the fake
+        // printer and for a board that turns out to differ.
         openUpstream: async () => {
-          const address = store.snapshot().address ?? config.printerIp;
-          if (!address) throw new Error('No printer address for the camera stream');
-          const url = config.cameraUrl.replace('{ip}', address);
-          // The controller is the only thing that actually closes the
-          // connection; destroying the Readable does not.
-          const controller = new AbortController();
-          const res = await fetch(url, { signal: controller.signal });
-          if (!res.ok || !res.body) {
-            controller.abort();
-            throw new Error(`Camera upstream returned ${res.status}`);
+          const client = printer.client;
+          if (!client) throw new Error('Not connected to the printer');
+
+          let url = config.cameraUrl;
+          if (url) {
+            const address = store.snapshot().address ?? config.printerIp;
+            if (!address) throw new Error('No printer address for the camera stream');
+            url = url.replace('{ip}', address);
+          } else {
+            url = await client.enableVideo();
           }
-          const { Readable } = await import('node:stream');
-          return {
-            stream: Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
-            abort: () => controller.abort(),
-          };
+
+          // An MJPEG override (the fake printer, or a board that serves it
+          // directly) is consumed as-is; anything else goes through ffmpeg.
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            const controller = new AbortController();
+            const res = await fetch(url, { signal: controller.signal });
+            if (!res.ok || !res.body) {
+              controller.abort();
+              throw new Error(`Camera upstream returned ${res.status}`);
+            }
+            const { Readable } = await import('node:stream');
+            return {
+              stream: Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
+              abort: () => controller.abort(),
+            };
+          }
+
+          return openRtspAsMjpeg({
+            url,
+            onLog: (line) => process.stdout.write(`${line}\n`),
+          });
         },
         onActive: async () => {
+          // Harmless when the URL came from enableVideo(), which already
+          // enabled it; necessary when CAMERA_URL bypassed that path.
           await printer.client?.setVideoStream(true).catch(() => {});
         },
         // Release the single slot so the Elegoo app can still connect.

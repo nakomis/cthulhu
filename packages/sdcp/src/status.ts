@@ -1,15 +1,13 @@
 /**
  * Status and attributes parsing.
  *
- * ────────────────────────────────────────────────────────────────────────────
- * WRITTEN AGAINST THE COMMUNITY DOCS, WHICH DESCRIBE AN FDM PRINTER.
+ * Follows the OFFICIAL specification, which is written for resin printers:
+ *   https://github.com/cbd-tech/SDCP-Smart-Device-Control-Protocol-V3.0.0
  *
- * Every field here is optional and every read is defensive, because the
- * Mars 5 Ultra is SLA and is expected to omit, rename or repurpose a good
- * portion of this. `raw` is always preserved so nothing is lost when the
- * shape turns out to differ - swap the fixtures, widen the types, and the
- * transport underneath does not change. See CTHU-2.
- * ────────────────────────────────────────────────────────────────────────────
+ * Every field is still optional and every read still defensive, and `raw` is
+ * always preserved. The spec is generic across Chitubox boards, so this
+ * printer may deviate; where a real capture and the spec disagree, the
+ * capture wins. See CTHU-2.
  */
 import { readMisspelled, WIRE_TYPOS } from './protocol.js';
 
@@ -26,20 +24,36 @@ export interface PrintInfo {
 
 export interface DevicesStatus {
   /**
-   * Release film health. Misspelled `RelaseFilmState` on the wire. Genuinely
-   * worth surfacing on an SLA machine - the film is a consumable that fails.
+   * Release film health. Misspelled `RelaseFilmState` IN THE SPECIFICATION
+   * ITSELF, not just in one firmware. Genuinely worth surfacing on an SLA
+   * machine - the film is a consumable that fails.
    */
   releaseFilmState: number | undefined;
-  tempOfUVLED: number | undefined;
-  /** Present on FDM; expected to be absent or meaningless here. */
-  tempOfNozzle: number | undefined;
-  tempOfHotbed: number | undefined;
+  /** The LCD is the other consumable that wears out. */
+  lcdStatus: number | undefined;
+  tempSensorStatusOfUVLED: number | undefined;
+  sgStatus: number | undefined;
+  zMotorStatus: number | undefined;
+  xMotorStatus: number | undefined;
+  rotateMotorStatus: number | undefined;
 }
 
 export interface PrinterStatus {
   machineStatus: number[];
+  previousStatus: number | undefined;
   printInfo: PrintInfo;
   devicesStatus: DevicesStatus;
+  /** Cumulative exposure time of the LCD, in seconds. A wear indicator. */
+  printScreen: number | undefined;
+  /** Release film USE COUNT - distinct from devicesStatus.releaseFilmState. */
+  releaseFilmUses: number | undefined;
+  tempOfUVLED: number | undefined;
+  /** Enclosure temperature. There is no nozzle or hotbed on an SLA machine. */
+  tempOfBox: number | undefined;
+  tempTargetBox: number | undefined;
+  timeLapseStatus: number | undefined;
+  /** 0 disconnected, 1 connected. Distinguishes "no camera" from "camera busy". */
+  cameraStatus: number | undefined;
   /** Misspelled `CurrenCoord` on the wire. */
   currentCoord: string | undefined;
   /** The untouched payload. Never drop this - it is the audit trail. */
@@ -74,6 +88,14 @@ export function parseStatus(raw: unknown): PrinterStatus {
 
   return {
     machineStatus: numArray(status.CurrentStatus ?? status.MachineStatus),
+    previousStatus: num(status.PreviousStatus),
+    printScreen: num(status.PrintScreen),
+    releaseFilmUses: num(status.ReleaseFilm),
+    tempOfUVLED: num(status.TempOfUVLED),
+    tempOfBox: num(status.TempOfBox),
+    tempTargetBox: num(status.TempTargetBox),
+    timeLapseStatus: num(status.TimeLapseStatus),
+    cameraStatus: num(status.CameraStatus),
     printInfo: {
       status: num(printInfo.Status),
       currentLayer: num(printInfo.CurrentLayer),
@@ -88,9 +110,12 @@ export function parseStatus(raw: unknown): PrinterStatus {
       releaseFilmState: num(
         readMisspelled(devices, WIRE_TYPOS.releaseFilmState, 'ReleaseFilmState'),
       ),
-      tempOfUVLED: num(devices.TempOfUVLED),
-      tempOfNozzle: num(devices.TempOfNozzle),
-      tempOfHotbed: num(devices.TempOfHotbed),
+      lcdStatus: num(devices.LCDStatus),
+      tempSensorStatusOfUVLED: num(devices.TempSensorStatusOfUVLED),
+      sgStatus: num(devices.SgStatus),
+      zMotorStatus: num(devices.ZMotorStatus),
+      xMotorStatus: num(devices.XMotorStatus),
+      rotateMotorStatus: num(devices.RotateMotorStatus),
     },
     currentCoord: str(readMisspelled(status, WIRE_TYPOS.currentCoord, 'CurrentCoord')),
     raw: root,

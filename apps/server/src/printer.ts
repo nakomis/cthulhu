@@ -124,10 +124,21 @@ export class PrinterService {
 
     this.store.on('printFinished', ({ filename, taskId }) => {
       this.history?.finishPrint(taskId, 'complete');
-      void this.notifier?.notify(
-        'Print finished',
-        filename ? `${filename} has finished printing.` : 'The print has finished.',
-      );
+      // notify() never throws and returns false on failure - which, unlogged,
+      // means a broken notification path is indistinguishable from a working
+      // one until somebody notices their phone never buzzes. Say something.
+      void this.notifier
+        ?.notify(
+          'Print finished',
+          filename ? `${filename} has finished printing.` : 'The print has finished.',
+        )
+        .then((sent) => {
+          this.log(
+            sent
+              ? `notified: ${filename ?? 'print'} finished`
+              : `NOTIFICATION FAILED for ${filename ?? 'print'} - check PUSHOVER_* and connectivity`,
+          );
+        });
     });
 
     await client.connect();

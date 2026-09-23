@@ -8,6 +8,8 @@ import {
   START_PRINT_ACK_MESSAGES,
   StartPrintAck,
   topics,
+  VIDEO_ACK_MESSAGES,
+  VideoAck,
   WEBSOCKET_PORT,
 } from './protocol.js';
 import {
@@ -354,6 +356,30 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
 
   setVideoStream(enable: boolean): Promise<Record<string, unknown>> {
     return this.send(Cmd.SetVideoStream, { Enable: enable ? 1 : 0 });
+  }
+
+  /**
+   * Enable the video stream and return the RTSP address the printer gives.
+   *
+   * The official spec returns the URL from Cmd 386 rather than exposing it at
+   * a fixed path, so it must be asked for and cannot be configured. Throws
+   * with the documented reason - "camera does not exist" and "exceeded the
+   * maximum simultaneous streaming limit" need very different responses.
+   */
+  async enableVideo(): Promise<string> {
+    const ack = await this.send(Cmd.SetVideoStream, { Enable: 1 });
+    const data = (ack.Data ?? ack) as Record<string, unknown>;
+    const code = typeof data.Ack === 'number' ? data.Ack : VideoAck.Ok;
+    if (code !== VideoAck.Ok) {
+      throw new SdcpError(
+        `Video stream refused: ${VIDEO_ACK_MESSAGES[code] ?? `unknown ack ${code}`} (${code})`,
+      );
+    }
+    const url = data.VideoUrl;
+    if (typeof url !== 'string' || url.length === 0) {
+      throw new SdcpError('Video stream enabled but the printer returned no VideoUrl');
+    }
+    return url;
   }
 
   setTimeLapse(enable: boolean): Promise<Record<string, unknown>> {

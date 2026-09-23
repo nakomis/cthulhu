@@ -74,6 +74,38 @@ export const START_PRINT_ACK_MESSAGES: Record<number, string> = {
 };
 
 /**
+ * Values of `PrintInfo.ErrorNumber`, from the official specification.
+ *
+ * Worth distinguishing: "resolution mismatch" means the file was sliced for a
+ * different printer, which needs re-slicing, whereas "MD5 check failed" means
+ * the transfer was corrupt and simply needs repeating. Reporting either as a
+ * bare number leaves the operator to guess which.
+ */
+export const PrintError = {
+  None: 0,
+  Md5CheckFailed: 1,
+  FileReadFailed: 2,
+  ResolutionMismatch: 3,
+  FormatMismatch: 4,
+  ModelMismatch: 5,
+} as const;
+
+export const PRINT_ERROR_MESSAGES: Record<number, string> = {
+  [PrintError.None]: 'none',
+  [PrintError.Md5CheckFailed]: 'MD5 check failed — the transfer was corrupt, re-upload',
+  [PrintError.FileReadFailed]: 'the printer could not read the file',
+  [PrintError.ResolutionMismatch]: 'resolution mismatch — sliced for a different printer',
+  [PrintError.FormatMismatch]: 'unsupported file format',
+  [PrintError.ModelMismatch]: 'model mismatch — sliced for a different machine',
+};
+
+/** Human-readable reason for an ErrorNumber, without inventing one. */
+export function printErrorMessage(code: number | undefined): string | undefined {
+  if (code === undefined || code === PrintError.None) return undefined;
+  return PRINT_ERROR_MESSAGES[code] ?? `unknown error ${code}`;
+}
+
+/**
  * Print status codes. Note how SLA-flavoured these are - dropping, exposuring,
  * lifting - even in documentation written for an FDM machine.
  */
@@ -96,8 +128,10 @@ export const MachineStatus = {
   Idle: 0,
   Printing: 1,
   FileTransferring: 2,
-  Calibrating: 3,
-  DeviceTesting: 4,
+  /** The official spec calls this exposure testing, not "calibrating". */
+  ExposureTesting: 3,
+  /** The official spec calls this device self-check. */
+  DeviceSelfCheck: 4,
 } as const;
 
 /**
@@ -107,6 +141,21 @@ export const MachineStatus = {
  * app still works. See CTHU-6.
  */
 export const MAX_VIDEO_STREAMS = 1;
+
+/** Acknowledgement codes for Cmd 386 (enable/disable the video stream). */
+export const VideoAck = {
+  Ok: 0,
+  ExceededMaxStreams: 1,
+  NoCamera: 2,
+  UnknownError: 3,
+} as const;
+
+export const VIDEO_ACK_MESSAGES: Record<number, string> = {
+  [VideoAck.Ok]: 'OK',
+  [VideoAck.ExceededMaxStreams]: 'exceeded the maximum simultaneous streaming limit',
+  [VideoAck.NoCamera]: 'camera does not exist',
+  [VideoAck.UnknownError]: 'unknown error',
+};
 
 /** Response to a discovery broadcast. */
 export interface DiscoveryResponse {
