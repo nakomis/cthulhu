@@ -13,6 +13,11 @@ import { useState } from 'react';
 export function Camera() {
   const [showing, setShowing] = useState(false);
   const [failed, setFailed] = useState(false);
+  // The printer's camera is H.264 over RTSP, and a decoder cannot produce a
+  // picture until the next keyframe. With a long GOP that is several seconds
+  // of an open, healthy, SILENT stream - no error fires, so without this the
+  // box sits blank and reads as broken. Cleared by the first frame's onLoad.
+  const [firstFrame, setFirstFrame] = useState(false);
 
   return (
     <section className="rounded-lg border border-slate-700 p-4">
@@ -22,6 +27,7 @@ export function Camera() {
           type="button"
           onClick={() => {
             setFailed(false);
+            setFirstFrame(false);
             setShowing((s) => !s);
           }}
           className="rounded border border-slate-600 px-3 py-1 text-sm"
@@ -37,12 +43,23 @@ export function Camera() {
             watching.
           </p>
         ) : (
-          <img
-            src="/api/camera/stream"
-            alt="Printer camera"
-            className="mt-3 w-full rounded bg-black"
-            onError={() => setFailed(true)}
-          />
+          <div className="relative mt-3">
+            {firstFrame ? null : (
+              <p
+                role="status"
+                className="absolute inset-0 flex items-center justify-center text-sm text-slate-400"
+              >
+                Waiting for the camera&rsquo;s first keyframe&hellip;
+              </p>
+            )}
+            <img
+              src="/api/camera/stream"
+              alt="Printer camera"
+              className="aspect-video w-full rounded bg-black"
+              onLoad={() => setFirstFrame(true)}
+              onError={() => setFailed(true)}
+            />
+          </div>
         )
       ) : (
         <p className="mt-3 text-sm text-slate-500">

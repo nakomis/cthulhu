@@ -36,6 +36,13 @@ export interface FakePrinterOptions {
    * synthetic frames if either is missing, so CI stays hermetic.
    */
   videoPath?: string;
+  /**
+   * What Cmd 386 hands back as the VideoUrl. The real printer returns an RTSP
+   * address; by default this fake returns its own MJPEG endpoint instead. Set
+   * this to an rtsp:// URL (e.g. a local mediamtx) to exercise the server's
+   * RTSP -> MJPEG transcoding path against a genuine RTSP stream.
+   */
+  videoUrl?: string;
   log?: (msg: string) => void;
 }
 
@@ -362,7 +369,7 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
               Data: {
                 Cmd: cmd,
                 Data: enable
-                  ? { Ack: 0, VideoUrl: `http://127.0.0.1:${wsPort}/video` }
+                  ? { Ack: 0, VideoUrl: options.videoUrl ?? `http://127.0.0.1:${wsPort}/video` }
                   : { Ack: 0 },
                 RequestID: requestId,
                 MainboardID: mainboardId,
