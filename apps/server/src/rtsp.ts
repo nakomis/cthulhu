@@ -71,10 +71,15 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
   return {
     stream: child.stdout as Readable,
     abort: () => {
-      // SIGKILL rather than SIGTERM: ffmpeg reading RTSP can sit in a
-      // blocking read and ignore a polite signal, and the whole point of
-      // aborting is to release the printer's single stream slot promptly.
-      child.kill('SIGKILL');
+      if (child.exitCode != null || child.signalCode != null) return;
+      // SIGTERM first: ffmpeg catches it and sends RTSP TEARDOWN, so the
+      // printer stops sending UDP packets at once rather than when its
+      // session times out. SIGKILL if it has not gone within two seconds -
+      // a blocking read can ignore the polite signal.
+      child.kill('SIGTERM');
+      const force = setTimeout(() => child.kill('SIGKILL'), 2000);
+      force.unref?.();
+      child.once('exit', () => clearTimeout(force));
     },
   };
 }

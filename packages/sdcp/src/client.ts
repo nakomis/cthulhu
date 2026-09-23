@@ -63,6 +63,16 @@ export class StartPrintError extends SdcpError {
   }
 }
 
+/** Cmd 386 refused. `ack` is a {@link VideoAck} code. */
+export class VideoStreamError extends SdcpError {
+  readonly ack: number;
+
+  constructor(ack: number) {
+    super(`Video stream refused: ${VIDEO_ACK_MESSAGES[ack] ?? `unknown ack ${ack}`} (${ack})`);
+    this.ack = ack;
+  }
+}
+
 interface Pending {
   resolve: (value: Record<string, unknown>) => void;
   reject: (err: Error) => void;
@@ -371,9 +381,7 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
     const data = (ack.Data ?? ack) as Record<string, unknown>;
     const code = typeof data.Ack === 'number' ? data.Ack : VideoAck.Ok;
     if (code !== VideoAck.Ok) {
-      throw new SdcpError(
-        `Video stream refused: ${VIDEO_ACK_MESSAGES[code] ?? `unknown ack ${code}`} (${code})`,
-      );
+      throw new VideoStreamError(code);
     }
     const url = data.VideoUrl;
     if (typeof url !== 'string' || url.length === 0) {
