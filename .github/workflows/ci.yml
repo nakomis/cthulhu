@@ -24,6 +24,16 @@ jobs:
 
       # pnpm/action-setup MUST come before setup-node: setup-node's cache keys
       # off the pnpm store, so the order matters.
+      # A private key reached a public PR once (a mediamtx auto.key swept up by
+      # `git add -A`). .gitignore does not stop an unexpected filename or a
+      # `git add -f`, so fail the build on the content itself.
+      - name: Refuse committed private keys
+        run: |
+          if git grep -lE 'BEGIN ([A-Z]+ )?PRIVATE KEY' -- . ; then
+            echo "::error::A private key is committed. Remove it and rotate it."
+            exit 1
+          fi
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:

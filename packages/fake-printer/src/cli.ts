@@ -14,6 +14,7 @@ import { createFakePrinter } from './server.js';
  *   FAKE_TOTAL_LAYERS   layers in a simulated print   (default 120)
  *   FAKE_AUTOSTART      begin a print immediately     (default false)
  *   FAKE_VIDEO          path to an mp4 for the camera (needs ffmpeg)
+ *   FAKE_VIDEO_URL      VideoUrl returned by Cmd 386, e.g. an rtsp:// stream
  */
 async function main(): Promise<void> {
   const wsPort = Number(process.env.FAKE_WS_PORT ?? 3030);
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     msPerLayer,
     statusIntervalMs: 1000,
     ...(process.env.FAKE_VIDEO ? { videoPath: process.env.FAKE_VIDEO } : {}),
+    ...(process.env.FAKE_VIDEO_URL ? { videoUrl: process.env.FAKE_VIDEO_URL } : {}),
     log: (msg) => process.stdout.write(`  ${msg}\n`),
   });
 

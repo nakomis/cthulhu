@@ -49,3 +49,12 @@ infra/bin/**/*.js
 infra/lib/**/*.js
 infra/test/**/*.js
 infra/**/*.d.ts
+
+# Keys and certificates. mediamtx, for one, silently writes a self-signed
+# auto.crt / auto.key into whatever directory it is started from, and a
+# blanket `git add -A` then commits the private key.
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
