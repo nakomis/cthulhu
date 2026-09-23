@@ -12,7 +12,7 @@ import { discover } from './discovery.js';
  * the Mars 5 Ultra ACTUALLY sends, before anybody writes a parser against
  * documentation that describes a different class of machine.
  *
- *   cthulhu-sdcp discover
+ *   cthulhu-sdcp discover [--broadcast 172.29.255.255]
  *   cthulhu-sdcp status  [--ip 172.29.0.x] [--port 3030] [--record capture.jsonl]
  *   cthulhu-sdcp watch   [--ip 172.29.0.x] [--port 3030] [--record capture.jsonl]
  *
@@ -29,6 +29,8 @@ interface Args {
    *  binds an ephemeral port in tests, so this is how they meet. */
   port: number | undefined;
   record: string | undefined;
+  /** Where discovery sends M99999. Defaults to 255.255.255.255. */
+  broadcast: string | undefined;
   timeoutMs: number;
   raw: boolean;
 }
@@ -40,6 +42,7 @@ function parseArgs(argv: string[]): Args {
     ip: undefined,
     port: undefined,
     record: undefined,
+    broadcast: undefined,
     timeoutMs: 3000,
     raw: false,
   };
@@ -57,6 +60,10 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--record':
         args.record = value;
+        i += 1;
+        break;
+      case '--broadcast':
+        args.broadcast = value;
         i += 1;
         break;
       case '--timeout':
@@ -126,7 +133,10 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.command === 'discover') {
-    const found = await discover({ timeoutMs: args.timeoutMs });
+    const found = await discover({
+      timeoutMs: args.timeoutMs,
+      ...(args.broadcast ? { broadcastAddress: args.broadcast } : {}),
+    });
     if (found.length === 0) {
       out('no printers answered');
       process.exitCode = 1;

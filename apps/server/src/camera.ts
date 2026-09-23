@@ -89,10 +89,16 @@ export class CameraProxy {
       handle.stream.on('data', (chunk: Buffer) => {
         for (const v of this.viewers) v.write(chunk);
       });
+      // The upstream died on its own (ffmpeg exited, or never started). Tell
+      // the printer too: it counts every enable against
+      // MaximumVideoStreamAllowed until it is told otherwise, so skipping
+      // onIdle here leaks a slot per failure until the camera is refused.
       const drop = () => {
+        if (this.upstream !== handle) return;
         this.upstream = undefined;
         for (const v of this.viewers) v.end();
         this.viewers.clear();
+        void this.onIdle?.();
       };
       handle.stream.on('end', drop);
       handle.stream.on('error', drop);
