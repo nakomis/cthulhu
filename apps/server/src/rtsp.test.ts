@@ -49,14 +49,45 @@ describe('openRtspAsMjpeg', () => {
     expect(args.indexOf('-rtsp_transport')).toBeLessThan(args.indexOf('-i'));
   });
 
-  it('SIGKILLs on abort, to release the printer slot promptly', () => {
-    // ffmpeg reading RTSP over TCP can sit in a blocking read and ignore
-    // SIGTERM. The entire point of aborting is to free the single stream.
+  it('SIGTERMs on abort, so ffmpeg sends RTSP TEARDOWN', () => {
+    // A SIGKILLed ffmpeg never says goodbye, and the printer keeps sending
+    // UDP packets until its RTSP session times out.
     const { child, spawnImpl } = fakeSpawn();
     const handle = openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
 
     handle.abort();
-    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('SIGKILLs if ffmpeg ignores SIGTERM for two seconds', () => {
+    // ffmpeg in a blocking read can ignore the polite signal.
+    vi.useFakeTimers();
+    try {
+      const { child, spawnImpl } = fakeSpawn();
+      const handle = openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
+
+      handle.abort();
+      vi.advanceTimersByTime(2000);
+      expect(child.kill).toHaveBeenLastCalledWith('SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not SIGKILL an ffmpeg that exited on SIGTERM', () => {
+    vi.useFakeTimers();
+    try {
+      const { child, spawnImpl } = fakeSpawn();
+      const handle = openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
+
+      handle.abort();
+      child.emit('exit', null, 'SIGTERM');
+      vi.advanceTimersByTime(5000);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces ffmpeg stderr through the log hook', async () => {

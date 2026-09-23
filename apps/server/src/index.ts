@@ -6,6 +6,7 @@ import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
 import { PrinterService } from './printer.js';
 import { openRtspAsMjpeg } from './rtsp.js';
 import { PrinterStore } from './store.js';
+import { resolveVideoUrl } from './video-url.js';
 
 async function main(): Promise<void> {
   let config: ReturnType<typeof loadConfig>;
@@ -46,6 +47,10 @@ async function main(): Promise<void> {
     log: (msg) => process.stdout.write(`${msg}\n`),
   });
 
+  // The last RTSP URL the printer handed back, for when its stream counter
+  // wedges and it refuses to hand one out again. See video-url.ts.
+  let lastVideoUrl: string | undefined;
+
   const camera = config.cameraEnabled
     ? new CameraProxy({
         // The stream URL comes from Cmd 386, not from configuration: the
@@ -62,7 +67,13 @@ async function main(): Promise<void> {
             if (!address) throw new Error('No printer address for the camera stream');
             url = url.replace('{ip}', address);
           } else {
-            url = await client.enableVideo();
+            url = await resolveVideoUrl({
+              enable: () => client.enableVideo(),
+              last: lastVideoUrl,
+              address: store.snapshot().address ?? config.printerIp,
+              onWarn: (w) => process.stdout.write(`camera: ${w}\n`),
+            });
+            lastVideoUrl = url;
           }
 
           // An MJPEG override (the fake printer, or a board that serves it
@@ -87,9 +98,11 @@ async function main(): Promise<void> {
           });
         },
         onActive: async () => {
-          // Harmless when the URL came from enableVideo(), which already
-          // enabled it; necessary when CAMERA_URL bypassed that path.
-          await printer.client?.setVideoStream(true).catch(() => {});
+          // Only for CAMERA_URL, which bypasses enableVideo(). Otherwise
+          // openUpstream enables the stream itself, and enabling it here too
+          // sent TWO enables per Watch against one disable: the real printer
+          // counts every one, and was full after a single Watch.
+          if (config.cameraUrl) await printer.client?.setVideoStream(true).catch(() => {});
         },
         // Release the single slot so the Elegoo app can still connect.
         onIdle: async () => {
