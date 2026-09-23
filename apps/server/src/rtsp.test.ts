@@ -28,16 +28,16 @@ describe('openRtspAsMjpeg', () => {
     expect(args).toContain('mpjpeg');
   });
 
-  it('forces RTSP over TCP', () => {
-    // UDP is ffmpeg's default and loses packets over WiFi in a way that shows
-    // up as a permanently corrupt picture rather than as an error.
+  it('tries UDP first and falls back to TCP', () => {
+    // The Mars 5 Ultra only speaks RTSP over UDP and answers a TCP request
+    // with "Nonmatching transport". Forcing TCP broke the real printer.
     const { spawnImpl } = fakeSpawn();
     openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
 
     const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
     const i = args.indexOf('-rtsp_transport');
     expect(i).toBeGreaterThan(-1);
-    expect(args[i + 1]).toBe('tcp');
+    expect(args[i + 1]).toBe('udp+tcp');
   });
 
   it('puts -rtsp_transport BEFORE -i, or ffmpeg ignores it', () => {
@@ -80,5 +80,24 @@ describe('openRtspAsMjpeg', () => {
     const chunk = new Promise<Buffer>((r) => handle.stream.once('data', r));
     child.stdout.write(Buffer.from('--frame\r\n'));
     expect((await chunk).toString()).toContain('--frame');
+  });
+
+  it('ends the stream instead of crashing when ffmpeg is not installed', async () => {
+    // A spawn failure is an 'error' event on the child. Unhandled, it would
+    // take the whole server down; handled, the camera proxy sees the stream
+    // fail and releases the printer's slot.
+    const { child, spawnImpl } = fakeSpawn();
+    const logs: string[] = [];
+    const { stream } = openRtspAsMjpeg({
+      url: 'rtsp://x/live',
+      spawnImpl: spawnImpl as never,
+      onLog: (l) => logs.push(l),
+    });
+    const failed = new Promise<Error>((r) => stream.once('error', r));
+
+    child.emit('error', new Error('spawn ffmpeg ENOENT'));
+
+    expect((await failed).message).toContain('ENOENT');
+    expect(logs.join('\n')).toContain('ffmpeg failed to start');
   });
 });

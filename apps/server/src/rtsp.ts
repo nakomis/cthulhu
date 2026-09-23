@@ -35,11 +35,11 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
     [
       '-loglevel',
       'error',
-      // TCP, not the default UDP: resin printers sit on WiFi and UDP RTSP
-      // loses packets in a way that shows up as a permanently corrupt image
-      // rather than as an error.
+      // UDP first, TCP as a fallback. The Mars 5 Ultra's RTSP server only
+      // speaks UDP: asked for TCP it answers "Nonmatching transport" and
+      // ffmpeg gives up. mediamtx and most other servers speak both.
       '-rtsp_transport',
-      'tcp',
+      'udp+tcp',
       '-i',
       url,
       '-f',
@@ -55,6 +55,14 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
+  // Without a listener, a spawn failure (ffmpeg not installed: ENOENT) is an
+  // uncaught 'error' event. End the stream instead, so the proxy drops the
+  // upstream and hands the printer's stream slot back.
+  child.on('error', (err: Error) => {
+    onLog?.(`ffmpeg failed to start: ${err.message}`);
+    (child.stdout as Readable | null)?.destroy(err);
+  });
+
   child.stderr?.on('data', (d: Buffer) => {
     const line = d.toString().trim();
     if (line) onLog?.(`ffmpeg: ${line}`);
@@ -63,7 +71,7 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
   return {
     stream: child.stdout as Readable,
     abort: () => {
-      // SIGKILL rather than SIGTERM: ffmpeg reading RTSP over TCP can sit in a
+      // SIGKILL rather than SIGTERM: ffmpeg reading RTSP can sit in a
       // blocking read and ignore a polite signal, and the whole point of
       // aborting is to release the printer's single stream slot promptly.
       child.kill('SIGKILL');

@@ -138,4 +138,28 @@ describe('camera proxy against a printer that allows exactly one stream', () => 
     await new Promise((r) => setTimeout(r, 300));
     expect(idled).toBe(1);
   });
+
+  it('calls onIdle when the upstream DIES, not only when viewers leave', async () => {
+    // Found on the real printer: ffmpeg was missing from the image, so every
+    // Watch died at once - and each one left a stream enabled on the printer,
+    // until it refused the camera outright with "maximum streams".
+    const { PassThrough } = await import('node:stream');
+    const upstream = new PassThrough();
+    let idled = 0;
+    proxy = new CameraProxy({
+      openUpstream: async () => ({ stream: upstream, abort: () => {} }),
+      onIdle: () => {
+        idled += 1;
+      },
+    });
+
+    const viewer = await proxy.addViewer();
+    const ended = new Promise((r) => viewer.once('end', r));
+    viewer.resume();
+    upstream.destroy(new Error('ffmpeg failed to start: spawn ffmpeg ENOENT'));
+    await ended;
+
+    expect(proxy.upstreamOpen).toBe(false);
+    expect(idled).toBe(1);
+  });
 });

@@ -119,8 +119,12 @@ describe('cthulhu-sdcp discover', () => {
   it('exits non-zero and points at --ip when nothing answers', async () => {
     // Broadcast does not cross subnets and Docker bridge networking eats it,
     // so "not found" must suggest the pinned-IP route rather than dead-end.
-    await expect(run('node', [CLI, 'discover', '--timeout', '400'])).rejects.toMatchObject({
-      code: 1,
-    });
+    //
+    // Aimed at TEST-NET-1 (RFC 5737), where nothing can answer. Plain
+    // broadcast stopped working as "nothing" the day a real printer joined
+    // the LAN.
+    await expect(
+      run('node', [CLI, 'discover', '--timeout', '400', '--broadcast', '192.0.2.255']),
+    ).rejects.toMatchObject({ code: 1 });
   }, 20_000);
 });

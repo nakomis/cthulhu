@@ -56,6 +56,12 @@ FROM node:25-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
+# ffmpeg turns the printer's RTSP camera into MJPEG a browser can show. Debian's
+# build picks CPU features at runtime, so it is safe on Luke, which has no AVX.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /prod/server/node_modules ./apps/server/node_modules
 COPY --from=build /prod/server/dist ./apps/server/dist
 COPY --from=build /prod/server/package.json ./apps/server/
