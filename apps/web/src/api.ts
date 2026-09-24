@@ -11,6 +11,8 @@ export interface PrinterView {
     totalLayer: number | undefined;
     progressPercent: number | undefined;
     remainingMs: number | undefined;
+    /** The printer's estimate of the whole print, in ms. */
+    totalMs?: number | undefined;
     errorNumber: number | undefined;
     taskId: string | undefined;
   };

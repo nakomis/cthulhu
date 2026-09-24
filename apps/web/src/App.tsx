@@ -135,7 +135,7 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
               style={{ width: `${progress}%` }}
             />
           </div>
-          <dl className="mt-3 grid grid-cols-3 gap-2 text-sm">
+          <dl className="mt-3 grid grid-cols-4 gap-2 text-sm">
             <div>
               <dt className="text-slate-400">Layer</dt>
               <dd>
@@ -145,6 +145,12 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
             <div>
               <dt className="text-slate-400">Done</dt>
               <dd>{progress}%</dd>
+            </div>
+            <div>
+              {/* The printer's figure (TotalTicks), which matched its touchscreen
+                  to the minute - longer than the slicer's estimate. */}
+              <dt className="text-slate-400">Total time</dt>
+              <dd>{formatEta(print?.totalMs ?? 0)}</dd>
             </div>
             <div>
               <dt className="text-slate-400">Remaining</dt>

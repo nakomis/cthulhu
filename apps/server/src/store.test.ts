@@ -163,4 +163,12 @@ describe('what the real Mars 5 Ultra sends', () => {
     expect(before - startedAt).toBeGreaterThanOrEqual(24 * 60_000 - 1000);
     expect(before - startedAt).toBeLessThanOrEqual(24 * 60_000 + 1000);
   });
+
+  it("carries the printer's total estimate, but not the 0 it sends before a file loads", () => {
+    const store = new PrinterStore();
+    store.applyStatus(status({ totalTicks: 8093248 }));
+    expect(store.snapshot().print.totalMs).toBe(8093248);
+    store.applyStatus(status({ totalTicks: 0 }));
+    expect(store.snapshot().print.totalMs).toBeUndefined();
+  });
 });
