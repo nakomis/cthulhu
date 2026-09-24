@@ -15,6 +15,12 @@ import { TimelapseStore } from './timelapse.js';
  *   FFMPEG_PATH   default "ffmpeg"; launchd runs without Homebrew on PATH
  *   TIMELAPSE_DIR where time-lapse frames and videos go; unset = no time-lapses
  *   TIMELAPSE_FPS frames per second of a finished time-lapse, default 30
+ *   RTP_PORT_MIN, RTP_PORT_MAX
+ *                 a fixed range of local UDP ports for ffmpeg's RTP receive -
+ *                 both or neither. Needed in Docker Desktop on macOS, where a
+ *                 bridged container's RTP ports must be published by number
+ *                 to be reachable at all; harmless (and unnecessary) under
+ *                 Linux host networking. See rtsp.ts.
  */
 function main(): void {
   const env = process.env;
@@ -28,6 +34,10 @@ function main(): void {
   const port = num(env.PORT, 9121);
   const host = env.HOST || '0.0.0.0';
   const log = (line: string) => process.stdout.write(`${new Date().toISOString()} ${line}\n`);
+
+  // Both or neither: a range with only one end is not a range.
+  const rtpPortMin = env.RTP_PORT_MIN ? Number(env.RTP_PORT_MIN) : undefined;
+  const rtpPortMax = env.RTP_PORT_MAX ? Number(env.RTP_PORT_MAX) : undefined;
 
   const timelapse = env.TIMELAPSE_DIR
     ? new TimelapseStore({
@@ -48,6 +58,7 @@ function main(): void {
         width: num(env.WIDTH, 960),
         quality: num(env.QUALITY, 5),
         ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
+        ...(rtpPortMin !== undefined && rtpPortMax !== undefined ? { rtpPortMin, rtpPortMax } : {}),
         onLog: log,
       }),
   });

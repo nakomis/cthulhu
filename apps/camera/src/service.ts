@@ -1,7 +1,7 @@
 import { createReadStream, statSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { PassThrough } from 'node:stream';
-import { CameraProxy, LatestFrame, type UpstreamHandle } from '@cthulhu/camera';
+import { CameraProxy, LatestFrame, parseRange, type UpstreamHandle } from '@cthulhu/camera';
 import { isTimelapseId, type TimelapseStore } from './timelapse.js';
 
 export interface CameraServiceOptions {
@@ -153,6 +153,13 @@ export function createCameraService(options: CameraServiceOptions): {
         json(res, info ? 200 : 404, info ?? { error: 'No such time-lapse' });
         return;
       }
+      if (!action && req.method === 'DELETE') {
+        // Called by the server once it has archived its own copy to the
+        // share, so the camera service does not keep a second copy forever.
+        const removed = timelapse.remove(id);
+        json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'No such time-lapse' });
+        return;
+      }
     }
 
     res.writeHead(404).end();
@@ -178,22 +185,12 @@ function sendFile(
   headOnly: boolean,
 ): void {
   const size = statSync(file).size;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(range ?? '');
-  let start = 0;
-  let end = size - 1;
-  if (match && (match[1] || match[2])) {
-    if (match[1]) {
-      start = Number(match[1]);
-      end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
-    } else {
-      start = Math.max(0, size - Number(match[2]));
-    }
-    if (start > end || start >= size) {
-      res.writeHead(416, { 'Content-Range': `bytes */${size}` }).end();
-      return;
-    }
+  const result = parseRange(range, size);
+  if (result === 'invalid') {
+    res.writeHead(416, { 'Content-Range': `bytes */${size}` }).end();
+    return;
   }
-  const partial = Boolean(match && (match[1] || match[2]));
+  const { start, end, partial } = result;
   res.writeHead(partial ? 206 : 200, {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',

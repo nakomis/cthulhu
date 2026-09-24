@@ -71,11 +71,11 @@ export class TimelapseStore {
   /** Assemble the video. Resolves when ffmpeg has finished, one way or the other. */
   async finish(id: string): Promise<TimelapseInfo> {
     const info = this.info(id);
-    if (!info || info.state !== 'recording') return info ?? this.fail(id, 'No such time-lapse');
+    if (info?.state !== 'recording') return info ?? this.fail(id, 'No such time-lapse');
     if (this.countFrames(id) === 0) return this.fail(id, 'No frames were captured');
     this.save({ ...info, state: 'assembling' });
 
-    const out = join(this.options.dir, `${id}.mp4`);
+    const out = this.videoFile(id);
     const part = `${out}.part.mp4`;
     const spawnImpl = this.options.spawnImpl ?? spawn;
     const child = spawnImpl(
@@ -157,7 +157,22 @@ export class TimelapseStore {
   }
 
   videoPath(id: string): string | undefined {
-    return this.info(id)?.state === 'ready' ? join(this.options.dir, `${id}.mp4`) : undefined;
+    return this.info(id)?.state === 'ready' ? this.videoFile(id) : undefined;
+  }
+
+  /**
+   * Delete a finished time-lapse: its video, metadata and any leftover
+   * frames. Called once the server has archived a copy to the share, so the
+   * camera service does not keep a second copy forever - see CTHU-16.
+   * Returns whether there was anything to delete.
+   */
+  remove(id: string): boolean {
+    if (!isTimelapseId(id)) return false;
+    const existed = this.info(id) !== undefined;
+    rmSync(this.videoFile(id), { force: true });
+    rmSync(this.metaPath(id), { force: true });
+    rmSync(this.framesDir(id), { recursive: true, force: true });
+    return existed;
   }
 
   private fail(id: string, error: string): TimelapseInfo {
@@ -176,6 +191,10 @@ export class TimelapseStore {
 
   private framesDir(id: string): string {
     return join(this.options.dir, id);
+  }
+
+  private videoFile(id: string): string {
+    return join(this.options.dir, `${id}.mp4`);
   }
 
   private metaPath(id: string): string {

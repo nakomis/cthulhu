@@ -33,6 +33,22 @@ export interface RtspOptions {
   bufferBytes?: number;
   /** The ffmpeg binary; launchd, for one, runs without Homebrew on PATH. */
   ffmpegPath?: string;
+  /**
+   * A fixed range of local UDP ports for ffmpeg to receive RTP on, passed as
+   * -min_port/-max_port before -i. Both or neither - a range with only one
+   * end is not a range.
+   *
+   * On Linux with host networking (Luke, Rey) this does nothing useful and is
+   * harmless. It matters in Docker Desktop on macOS (phi, while it still runs
+   * the camera service): Docker Desktop cannot use host networking, and a
+   * bridged container's ephemeral RTP ports are not reachable from outside at
+   * all unless every one of them is published. Pinning ffmpeg to a small,
+   * known range and publishing exactly that range
+   * (`-p 50000-50009:50000-50009/udp`) is what lets the printer's RTP packets
+   * reach the container. See CTHU-15.
+   */
+  rtpPortMin?: number;
+  rtpPortMax?: number;
   /** Injected in tests. */
   spawnImpl?: typeof spawn;
   onLog?: (line: string) => void;
@@ -46,6 +62,8 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
     maxFps = 10,
     bufferBytes = 8 * 1024 * 1024,
     ffmpegPath = 'ffmpeg',
+    rtpPortMin,
+    rtpPortMax,
     spawnImpl = spawn,
     onLog,
   } = options;
@@ -68,6 +86,11 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
       // ~3.7 times - so stamp each frame by when it actually arrived.
       '-use_wallclock_as_timestamps',
       '1',
+      // An INPUT option, so it must come before -i or ffmpeg ignores it -
+      // same rule as -rtsp_transport above.
+      ...(rtpPortMin !== undefined && rtpPortMax !== undefined
+        ? ['-min_port', String(rtpPortMin), '-max_port', String(rtpPortMax)]
+        : []),
       '-i',
       url,
       '-f',

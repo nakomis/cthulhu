@@ -137,4 +137,88 @@ describe('time-lapse routes', () => {
       (await (await fetch(`${base}/timelapse`)).json()).map((t: { id: string }) => t.id),
     ).toEqual(['task-7']);
   });
+
+  it('serves the finished video, with Range support, and plain metadata', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { TimelapseStore } = await import('./timelapse.js');
+    const { createCameraService } = await import('./service.js');
+    const dir = mkdtempSync(join(tmpdir(), 'tl-video-'));
+    const store = new TimelapseStore({ dir });
+    store.start('task-8');
+    // Write the finished state directly - what finish() would leave behind -
+    // so the test does not depend on ffmpeg being installed.
+    writeFileSync(join(dir, 'task-8.mp4'), '0123456789');
+    writeFileSync(
+      join(dir, 'task-8.json'),
+      JSON.stringify({
+        id: 'task-8',
+        state: 'ready',
+        frames: 3,
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    const { server } = createCameraService({
+      timelapse: store,
+      openUpstream: async () => ({ stream: new PassThrough(), abort: () => {} }),
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    close = () =>
+      new Promise((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      });
+
+    const whole = await fetch(`${base}/timelapse/task-8.mp4`);
+    expect(whole.status).toBe(200);
+    expect(await whole.text()).toBe('0123456789');
+
+    const partial = await fetch(`${base}/timelapse/task-8.mp4`, {
+      headers: { Range: 'bytes=2-4' },
+    });
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get('content-range')).toBe('bytes 2-4/10');
+    expect(await partial.text()).toBe('234');
+
+    const head = await fetch(`${base}/timelapse/task-8.mp4`, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe('10');
+
+    const info = await fetch(`${base}/timelapse/task-8`);
+    expect(await info.json()).toMatchObject({ id: 'task-8', state: 'ready' });
+
+    expect((await fetch(`${base}/timelapse/no-such-id.mp4`)).status).toBe(404);
+  });
+
+  it('deletes a time-lapse for the server, once it has archived its own copy', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { TimelapseStore } = await import('./timelapse.js');
+    const { createCameraService } = await import('./service.js');
+    const dir = mkdtempSync(join(tmpdir(), 'tl-del-'));
+    const store = new TimelapseStore({ dir });
+    store.start('task-9');
+    writeFileSync(join(dir, 'task-9.mp4'), 'MP4');
+    const { server } = createCameraService({
+      timelapse: store,
+      openUpstream: async () => ({ stream: new PassThrough(), abort: () => {} }),
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    close = () =>
+      new Promise((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      });
+
+    const del = await fetch(`${base}/timelapse/task-9`, { method: 'DELETE' });
+    expect(del.status).toBe(200);
+    expect(store.info('task-9')).toBeUndefined();
+
+    const again = await fetch(`${base}/timelapse/task-9`, { method: 'DELETE' });
+    expect(again.status).toBe(404);
+  });
 });

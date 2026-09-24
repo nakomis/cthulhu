@@ -72,6 +72,25 @@ describe('TimelapseStore', () => {
     });
   });
 
+  it('deletes a finished time-lapse: video, metadata and any leftover frames', async () => {
+    const store = new TimelapseStore({ dir, spawnImpl: fakeFfmpeg() as never });
+    store.addFrame('task-5', 0, jpeg);
+    await store.finish('task-5');
+    expect(existsSync(join(dir, 'task-5.mp4'))).toBe(true);
+
+    expect(store.remove('task-5')).toBe(true);
+    expect(existsSync(join(dir, 'task-5.mp4'))).toBe(false);
+    expect(store.info('task-5')).toBeUndefined();
+
+    // Nothing to delete the second time, and never throws.
+    expect(store.remove('task-5')).toBe(false);
+  });
+
+  it('refuses to delete anything but a time-lapse id', () => {
+    const store = new TimelapseStore({ dir });
+    expect(store.remove('../etc')).toBe(false);
+  });
+
   it('only ever turns a task id into a path', () => {
     expect(isTimelapseId('e0b0890e-b803-11f1-9526-3c1accf1b2e1')).toBe(true);
     for (const bad of ['../etc', 'a/b', '', 'x'.repeat(65)]) expect(isTimelapseId(bad)).toBe(false);

@@ -18,8 +18,15 @@ export interface Config {
   discoveryEnabled: boolean;
   discoveryTimeoutMs: number;
   discoveryBroadcastAddress: string;
-  /** Where the SQLite history database lives. */
+  /** Where the SQLite history database lives. Ignored once databaseUrl is set. */
   databasePath: string;
+  /**
+   * A Postgres connection string, e.g. postgres://user:pass@luke:5432/cthulhu.
+   * When set, history moves to Postgres instead of the local SQLite file -
+   * needed once the server itself no longer sits beside its storage. See
+   * createHistoryStore() in history.ts and CTHU-15.
+   */
+  databaseUrl: string | undefined;
   /** Pushover, for print-finished notifications. Both required, or neither. */
   pushoverUserKey: string | undefined;
   pushoverAppToken: string | undefined;
@@ -52,6 +59,13 @@ export interface Config {
   maxUploadBytes: number;
   /** Directory of the built SPA. Unset in dev, where Vite serves it. */
   webRoot: string | undefined;
+  /**
+   * A directory - typically a Samba share mounted into the container - where
+   * finished time-lapses are archived once the camera service marks them
+   * ready. Unset (the default) keeps today's behaviour: time-lapses live only
+   * on the camera service's own disk. See TimelapseArchiver and CTHU-16.
+   */
+  timelapseArchiveDir: string | undefined;
 }
 
 export class ConfigError extends Error {}
@@ -95,6 +109,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     discoveryTimeoutMs: intFromEnv(env, 'DISCOVERY_TIMEOUT_MS', 2000),
     discoveryBroadcastAddress: env.DISCOVERY_BROADCAST_ADDRESS || '255.255.255.255',
     databasePath: env.DATABASE_PATH ?? '/data/cthulhu.sqlite',
+    databaseUrl: env.DATABASE_URL || undefined,
     pushoverUserKey,
     pushoverAppToken,
     cameraEnabled: boolFromEnv(env, 'CAMERA_ENABLED', true),
@@ -102,6 +117,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     uploadPort: intFromEnv(env, 'UPLOAD_PORT', 3030),
     maxUploadBytes: intFromEnv(env, 'MAX_UPLOAD_BYTES', 1024 * 1024 * 1024),
     webRoot: env.WEB_ROOT || undefined,
+    timelapseArchiveDir: env.TIMELAPSE_ARCHIVE_DIR || undefined,
   };
 
   if (!config.printerIp && !config.discoveryEnabled) {
