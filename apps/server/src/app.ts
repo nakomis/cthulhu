@@ -68,7 +68,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     },
   }));
 
-  app.get('/api/status', async () => store.snapshot());
+  // Open to any origin so NakTV can read it: a webOS app loads from file://,
+  // a null origin, and has no way past Leia's mTLS. Read-only, and nothing in
+  // the snapshot is secret.
+  app.get('/api/status', async (_request, reply) => {
+    reply.header('Access-Control-Allow-Origin', '*');
+    return store.snapshot();
+  });
 
   app.get('/api/history', async (request) => {
     if (!history) return { prints: [] };
