@@ -1,5 +1,6 @@
 import { openRtspAsMjpeg } from '@cthulhu/camera';
 import { createCameraService } from './service.js';
+import { TimelapseStore } from './timelapse.js';
 
 /**
  * Configuration, all from the environment:
@@ -12,6 +13,8 @@ import { createCameraService } from './service.js';
  *   WIDTH         output width in px, default 960
  *   QUALITY       ffmpeg JPEG quality, 2 (best) to 31, default 5
  *   FFMPEG_PATH   default "ffmpeg"; launchd runs without Homebrew on PATH
+ *   TIMELAPSE_DIR where time-lapse frames and videos go; unset = no time-lapses
+ *   TIMELAPSE_FPS frames per second of a finished time-lapse, default 30
  */
 function main(): void {
   const env = process.env;
@@ -26,8 +29,18 @@ function main(): void {
   const host = env.HOST || '0.0.0.0';
   const log = (line: string) => process.stdout.write(`${new Date().toISOString()} ${line}\n`);
 
+  const timelapse = env.TIMELAPSE_DIR
+    ? new TimelapseStore({
+        dir: env.TIMELAPSE_DIR,
+        fps: num(env.TIMELAPSE_FPS, 30),
+        ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
+        log,
+      })
+    : undefined;
+
   const { server } = createCameraService({
     log,
+    ...(timelapse ? { timelapse } : {}),
     openUpstream: async () =>
       openRtspAsMjpeg({
         url,

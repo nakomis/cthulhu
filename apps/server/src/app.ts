@@ -24,6 +24,8 @@ export interface BuildAppOptions {
   fileMeta?: FileMetaCache;
   /** The current print's thumbnail and layer images. */
   printView?: PrintView;
+  /** The camera service, which records and keeps the time-lapses. */
+  timelapseBase?: string;
   logger?: boolean;
 }
 
@@ -36,6 +38,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     camera,
     fileMeta,
     printView,
+    timelapseBase,
     webRoot,
     logger = false,
   } = options;
@@ -207,6 +210,39 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     }
     if (result.state === 'downloading') return reply.code(202).send(result);
     return reply.code(502).send({ error: result.error });
+  });
+
+  // ---- Time-lapses: made and kept by the camera service -----------------
+  app.get('/api/timelapses', async (_request, reply) => {
+    if (!timelapseBase) return [];
+    const res = await fetch(`${timelapseBase}/timelapse`).catch(() => undefined);
+    if (!res?.ok) return reply.code(502).send({ error: 'The camera service did not answer' });
+    const list = (await res.json()) as { id: string }[];
+    // Named after the file printed, from cthulhu's own history.
+    const names = new Map((history?.list(500) ?? []).map((p) => [p.taskId, p.filename]));
+    return list.map((t) => ({ ...t, filename: names.get(t.id) ?? null }));
+  });
+
+  app.get<{ Params: { id: string } }>('/api/timelapses/:id.mp4', async (request, reply) => {
+    if (!timelapseBase || !/^[A-Za-z0-9-]{1,64}$/.test(request.params.id)) {
+      return reply.code(404).send({ error: 'No such time-lapse' });
+    }
+    // Range passed through, so the player can seek.
+    const range = request.headers.range;
+    const res = await fetch(`${timelapseBase}/timelapse/${request.params.id}.mp4`, {
+      headers: range ? { Range: range } : {},
+    }).catch(() => undefined);
+    if (!res?.body || (!res.ok && res.status !== 206)) {
+      return reply.code(res?.status === 404 ? 404 : 502).send({ error: 'No video' });
+    }
+    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+      const v = res.headers.get(h);
+      if (v) reply.header(h, v);
+    }
+    const { Readable } = await import('node:stream');
+    return reply
+      .code(res.status)
+      .send(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]));
   });
 
   app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {

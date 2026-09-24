@@ -8,6 +8,8 @@ import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
 import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
+import { cameraServiceOrigin, TimelapseRecorder } from './timelapse.js';
+import { VideoLease } from './video-lease.js';
 import { resolveVideoUrl } from './video-url.js';
 
 async function main(): Promise<void> {
@@ -52,6 +54,12 @@ async function main(): Promise<void> {
   // The last RTSP URL the printer handed back, for when its stream counter
   // wedges and it refuses to hand one out again. See video-url.ts.
   let lastVideoUrl: string | undefined;
+
+  // One enable for the first user of the printer's stream, one disable after
+  // the last: browsers and the time-lapse share it. See video-lease.ts.
+  const videoLease = new VideoLease((on) =>
+    printer.client ? printer.client.setVideoStream(on) : Promise.resolve(),
+  );
 
   const camera = config.cameraEnabled
     ? new CameraProxy({
@@ -104,11 +112,13 @@ async function main(): Promise<void> {
           // openUpstream enables the stream itself, and enabling it here too
           // sent TWO enables per Watch against one disable: the real printer
           // counts every one, and was full after a single Watch.
-          if (config.cameraUrl) await printer.client?.setVideoStream(true).catch(() => {});
+          if (config.cameraUrl) await videoLease.acquire();
         },
-        // Release the single slot so the Elegoo app can still connect.
+        // Release the slot so the Elegoo app can still connect - through the
+        // lease, so a time-lapse still recording keeps the stream on.
         onIdle: async () => {
-          await printer.client?.setVideoStream(false).catch(() => {});
+          if (config.cameraUrl) await videoLease.release();
+          else await printer.client?.setVideoStream(false).catch(() => {});
         },
       })
     : undefined;
@@ -135,6 +145,18 @@ async function main(): Promise<void> {
       };
     },
   });
+  // A time-lapse of every print, made by the camera service. Only when the
+  // camera IS that service: transcoding on Luke is the fallback, not the plan.
+  const timelapseBase = config.cameraEnabled ? cameraServiceOrigin(config.cameraUrl) : undefined;
+  const timelapse = timelapseBase
+    ? new TimelapseRecorder({
+        baseUrl: timelapseBase,
+        lease: videoLease,
+        log: (line) => process.stdout.write(`${line}\n`),
+      })
+    : undefined;
+  if (timelapse) store.on('update', (view) => timelapse.update(view));
+
   // Fetch the print file as soon as a print starts, so the first layer image
   // is not a 45-second wait.
   store.on('printStarted', ({ taskId }) => {
@@ -151,6 +173,7 @@ async function main(): Promise<void> {
     ...(camera ? { camera } : {}),
     fileMeta,
     printView,
+    ...(timelapseBase ? { timelapseBase } : {}),
     logger: true,
   });
 
