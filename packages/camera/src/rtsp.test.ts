@@ -153,4 +153,54 @@ describe('openRtspAsMjpeg', () => {
       expect(isDecoderNoise(real)).toBe(false);
     }
   });
+
+  it('stamps frames by arrival time, because the printer clock runs 11x fast', () => {
+    // Frames arrive every ~33 ms stamped 367 ms apart. Timed by those stamps,
+    // the old fps=10 filter duplicated each frame ~3.7 times: ~94 fps of
+    // JPEGs from a 25 fps camera, both of Luke's cores pinned.
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+
+    const i = args.indexOf('-use_wallclock_as_timestamps');
+    expect(args[i + 1]).toBe('1');
+    expect(i).toBeLessThan(args.indexOf('-i'));
+  });
+
+  it('caps the frame rate by dropping frames, never by inventing them', () => {
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({ url: 'rtsp://x/live', maxFps: 20, spawnImpl: spawnImpl as never });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+    const filter = args[args.indexOf('-vf') + 1] as string;
+
+    expect(filter).not.toMatch(/(^|,)fps=/);
+    expect(filter).toContain('select=');
+    expect(filter).toContain('0.045'); // 90% of 1/20 s
+    expect(args[args.indexOf('-fps_mode') + 1]).toBe('vfr');
+  });
+
+  it('enlarges the UDP buffer, and runs whichever ffmpeg it is given', () => {
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({
+      url: 'rtsp://x/live',
+      ffmpegPath: '/opt/homebrew/bin/ffmpeg',
+      spawnImpl: spawnImpl as never,
+    });
+    const [bin, args] = spawnImpl.mock.calls[0] as [string, string[]];
+    expect(bin).toBe('/opt/homebrew/bin/ffmpeg');
+    expect(args[args.indexOf('-buffer_size') + 1]).toBe(String(8 * 1024 * 1024));
+  });
+
+  it('stays quiet about ffmpeg complaining that it was stopped', () => {
+    const { child, spawnImpl } = fakeSpawn();
+    const logs: string[] = [];
+    const handle = openRtspAsMjpeg({
+      url: 'rtsp://x/live',
+      spawnImpl: spawnImpl as never,
+      onLog: (l) => logs.push(l),
+    });
+    handle.abort();
+    child.stderr.write('Error submitting a packet to the muxer: Broken pipe\n');
+    expect(logs).toEqual([]);
+  });
 });

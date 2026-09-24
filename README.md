@@ -23,6 +23,7 @@ If you find this useful, please consider buying me a coffee:
 - [Repository Layout](#repository-layout)
 - [The protocol](#the-protocol)
 - [What the real printer taught us](#what-the-real-printer-taught-us)
+- [The camera](#the-camera)
 - [Development](#development)
   * [Running against a printer](#running-against-a-printer)
 - [Deployment](#deployment)
@@ -37,7 +38,10 @@ If you find this useful, please consider buying me a coffee:
 | Path | What it is |
 |---|---|
 | `packages/sdcp/` | The SDCP protocol client. Deliberately free of web and storage concerns, so it is independently testable and publishable on its own merits. |
+| `packages/camera/` | Camera plumbing shared by both apps: one upstream shared between viewers, and RTSP to MJPEG through ffmpeg. |
+| `packages/fake-printer/` | A fake Mars 5 Ultra for tests and local development, shaped from real captures. |
 | `apps/server/` | Fastify server: REST, WebSocket push, camera proxy, SQLite history, notifications. |
+| `apps/camera/` | The camera transcoder, run off Luke: pulls the printer's RTSP stream and serves it as MJPEG over HTTP. |
 | `apps/web/` | React + Vite + Tailwind dashboard. |
 | `infra/` | CDK. **Only** a GitHub CI role — Cthulhu has no AWS runtime. |
 | `docker/` | Dockerfile and compose file for the deployment on Luke. |
@@ -83,6 +87,34 @@ Found against an Elegoo Mars 5 Ultra, firmware V1.5.0, on 23–24 September
 | `CurrentTicks` / `TotalTicks` are milliseconds | The touchscreen's 2 h 14 m matched |
 | A normal print ends 7 (Stopping) → 9 (Complete) | Status 7 with no layers left is labelled "Finishing" |
 | Uploads run at about 100 KB/s over the printer's WiFi | 13 MB takes about two and a half minutes |
+
+## The camera
+
+The printer's camera is H.264 over RTSP; a browser `<img>` wants MJPEG. The
+decode and re-encode is the heaviest thing cthulhu does, and too much for
+Luke's two 1.5 GHz cores, so it runs elsewhere: `apps/camera` on phi for now,
+Rey eventually.
+
+```text
+browser ──mTLS──> Leia ──> cthulhu on Luke ──HTTP MJPEG──> apps/camera on phi ──RTSP/UDP──> printer
+                              │                                                             ▲
+                              └──────────── Cmd 386: stream on / off ───────────────────────┘
+```
+
+- cthulhu points `CAMERA_URL` at the transcoder, and still owns the SDCP
+  side: it turns the printer's stream on before connecting and off when the
+  last browser leaves. The transcoder knows nothing about SDCP.
+- The transcoder stops ffmpeg when nobody is connected, so it costs nothing
+  while idle.
+- Leave `CAMERA_URL` empty and cthulhu transcodes locally, as before. It
+  works, at the cost of Luke's CPU.
+- The printer stamps its frames about 11× too fast (it advertises 30/11 fps),
+  so ffmpeg is told to time frames by arrival: `-use_wallclock_as_timestamps`.
+  Anything timed by the printer's clock is wrong.
+
+```bash
+PRINTER_IP=172.29.0.37 pnpm --filter @cthulhu/camera-service start   # http://localhost:9121/video
+```
 
 ## Development
 

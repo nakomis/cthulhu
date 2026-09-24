@@ -1,6 +1,6 @@
 import { createFakePrinter, type FakePrinter } from '@cthulhu/fake-printer';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CameraProxy } from './camera.js';
+import { CameraProxy } from './proxy.js';
 
 let printer: FakePrinter;
 let proxy: CameraProxy;

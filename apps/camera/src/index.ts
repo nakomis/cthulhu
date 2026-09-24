@@ -1,0 +1,48 @@
+import { openRtspAsMjpeg } from '@cthulhu/camera';
+import { createCameraService } from './service.js';
+
+/**
+ * Configuration, all from the environment:
+ *
+ *   PRINTER_IP    the printer; its stream is rtsp://PRINTER_IP:554/video
+ *   RTSP_URL      or the stream's address in full, overriding PRINTER_IP
+ *   PORT          default 9121 (cthulhu is 9120)
+ *   HOST          default 0.0.0.0
+ *   MAX_FPS       frame-rate ceiling, default 20 - about all the camera sends
+ *   WIDTH         output width in px, default 960
+ *   QUALITY       ffmpeg JPEG quality, 2 (best) to 31, default 5
+ *   FFMPEG_PATH   default "ffmpeg"; launchd runs without Homebrew on PATH
+ */
+function main(): void {
+  const env = process.env;
+  const url = env.RTSP_URL || (env.PRINTER_IP ? `rtsp://${env.PRINTER_IP}:554/video` : '');
+  if (!url) {
+    process.stderr.write('Set PRINTER_IP (or RTSP_URL).\n');
+    process.exitCode = 2;
+    return;
+  }
+  const num = (v: string | undefined, fallback: number) => Number(v) || fallback;
+  const port = num(env.PORT, 9121);
+  const host = env.HOST || '0.0.0.0';
+  const log = (line: string) => process.stdout.write(`${new Date().toISOString()} ${line}\n`);
+
+  const { server } = createCameraService({
+    log,
+    openUpstream: async () =>
+      openRtspAsMjpeg({
+        url,
+        maxFps: num(env.MAX_FPS, 20),
+        width: num(env.WIDTH, 960),
+        quality: num(env.QUALITY, 5),
+        ffmpegPath: env.FFMPEG_PATH || 'ffmpeg',
+        onLog: log,
+      }),
+  });
+
+  server.listen(port, host, () => log(`camera service on http://${host}:${port}/video for ${url}`));
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => server.close(() => process.exit(0)));
+  }
+}
+
+main();

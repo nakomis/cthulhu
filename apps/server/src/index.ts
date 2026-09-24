@@ -1,12 +1,11 @@
 import { dirname, join } from 'node:path';
+import { CameraProxy, openRtspAsMjpeg } from '@cthulhu/camera';
 import { buildApp } from './app.js';
-import { CameraProxy } from './camera.js';
 import { ConfigError, loadConfig } from './config.js';
 import { History } from './history.js';
 import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
 import { PreviewStore } from './previews.js';
 import { PrinterService } from './printer.js';
-import { openRtspAsMjpeg } from './rtsp.js';
 import { PrinterStore } from './store.js';
 import { resolveVideoUrl } from './video-url.js';
 

@@ -40,7 +40,10 @@ or the status parser.
 
 - pnpm workspace, Node 25, TypeScript 7 throughout
 - `packages/sdcp` — protocol client, no web or storage dependencies
+- `packages/camera` — camera plumbing (shared upstream, RTSP to MJPEG)
 - `apps/server` — Fastify
+- `apps/camera` — the camera transcoder, run off Luke (phi now, Rey later);
+  see the README's **The camera**
 - `apps/web` — React 19, Vite, Tailwind 4
 - `infra` — CDK, GitHub CI role only
 - Biome for lint/format; Vitest everywhere except `infra`, which uses Jest

@@ -1,8 +1,8 @@
+import type { CameraProxy } from '@cthulhu/camera';
 import { StartPrintError, UploadError, UploadRejectedError, uploadFile } from '@cthulhu/sdcp';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
-import type { CameraProxy } from './camera.js';
 import type { Config } from './config.js';
 import { listPrintableFiles } from './file-list.js';
 import { extractGooPreview } from './goo-preview.js';
