@@ -13,7 +13,7 @@ const listFiles = async () => [file('cthulhu.goo'), file('boots.ctb')];
 
 describe('Files', () => {
   it('lists the files on the printer', async () => {
-    render(<Files listFiles={listFiles} />);
+    render(<Files listFiles={listFiles} fileMeta={async () => undefined} />);
     expect(await screen.findByText('cthulhu.goo')).toBeInTheDocument();
     expect(screen.getByText('boots.ctb')).toBeInTheDocument();
   });
@@ -106,5 +106,19 @@ describe('Files', () => {
   it('shows an empty state when the printer has no files', async () => {
     render(<Files listFiles={async () => []} />);
     expect(await screen.findByText('No files on the printer.')).toBeInTheDocument();
+  });
+
+  it("shows each file's preview and, once read, its layers and slicer time", async () => {
+    const fileMeta = vi.fn(async () => ({
+      layerCount: 893,
+      layerHeightMm: 0.05,
+      printTimeS: 5300,
+      preview: true,
+    }));
+    render(<Files listFiles={async () => [file('keystamp.goo')]} fileMeta={fileMeta} />);
+    const img = await screen.findByRole('img', { name: 'Preview of keystamp.goo' });
+    expect(img).toHaveAttribute('src', '/api/files/preview?path=%2Flocal%2Fkeystamp.goo');
+    expect(await screen.findByText(/893 layers · about 1 h 28 m/)).toBeInTheDocument();
+    expect(fileMeta).toHaveBeenCalledWith('/local/keystamp.goo');
   });
 });

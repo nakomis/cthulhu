@@ -29,6 +29,7 @@ FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/sdcp/package.json packages/sdcp/
 COPY packages/camera/package.json packages/camera/
+COPY packages/goo/package.json packages/goo/
 COPY packages/fake-printer/package.json packages/fake-printer/
 COPY apps/server/package.json apps/server/
 COPY apps/camera/package.json apps/camera/
@@ -42,6 +43,7 @@ FROM deps AS build
 COPY . .
 RUN pnpm --filter @cthulhu/sdcp build \
  && pnpm --filter @cthulhu/camera build \
+ && pnpm --filter @cthulhu/goo build \
  && pnpm --filter @cthulhu/server build \
  && pnpm --filter @cthulhu/web build
 
@@ -51,7 +53,7 @@ RUN pnpm --filter @cthulhu/sdcp build \
 # build tooling with no runtime role at all: aws-cdk-lib (148 MB) for infra
 # that Cthulhu does not even have, Biome (62 MB), swc (32 MB), TypeScript
 # (27 MB), esbuild, rolldown. `pnpm deploy --prod` resolves the workspace
-# links to @cthulhu/sdcp and @cthulhu/camera and keeps only real runtime
+# links to @cthulhu/sdcp, @cthulhu/camera and @cthulhu/goo and keeps only real runtime
 # dependencies.
 RUN pnpm --filter @cthulhu/server deploy --prod --legacy /prod/server
 

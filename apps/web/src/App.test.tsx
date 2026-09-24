@@ -128,19 +128,18 @@ describe('dashboard', () => {
     expect(container.querySelector('header img')).toHaveAttribute('src', '/icon-192.png');
   });
 
-  it("shows the slicer's preview of the file being printed", async () => {
-    render(<App fetchStatus={async () => view({ filename: 'keystamp.goo' })} pollMs={100_000} />);
-    const img = await screen.findByRole('img', { name: 'Slicer preview of keystamp.goo' });
-    expect(img).toHaveAttribute('src', '/api/preview/keystamp.goo');
+  it("shows the printer's own thumbnail of the print", async () => {
+    render(<App fetchStatus={async () => view({ taskId: 'task-9' })} pollMs={100_000} />);
+    const img = await screen.findByRole('img', { name: 'Preview of the print' });
+    expect(img).toHaveAttribute('src', '/api/print/thumbnail?task=task-9');
   });
 
-  it('shows nothing, not a broken image, when there is no preview', async () => {
-    // Files from the USB stick never passed through cthulhu, so have none.
-    render(<App fetchStatus={async () => view({ filename: 'ROOK.goo' })} pollMs={100_000} />);
-    const img = await screen.findByRole('img', { name: 'Slicer preview of ROOK.goo' });
+  it('shows nothing, not a broken image, when there is no thumbnail', async () => {
+    render(<App fetchStatus={async () => view({ taskId: 'task-9' })} pollMs={100_000} />);
+    const img = await screen.findByRole('img', { name: 'Preview of the print' });
     img.dispatchEvent(new Event('error'));
     await waitFor(() =>
-      expect(screen.queryByRole('img', { name: /Slicer preview/ })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('img', { name: 'Preview of the print' })).not.toBeInTheDocument(),
     );
   });
 

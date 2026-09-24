@@ -2,13 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFakePrinter, type FakePrinter } from '@cthulhu/fake-printer';
+import { syntheticGoo } from '@cthulhu/goo';
 import type { SocketLike } from '@cthulhu/sdcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
+import { FileMetaCache } from './file-meta.js';
 import { History } from './history.js';
-import { PreviewStore } from './previews.js';
+import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
 
@@ -54,7 +56,19 @@ beforeEach(async () => {
     store,
     printer: service,
     history,
-    previews: new PreviewStore(join(dir, 'previews')),
+    fileMeta: new FileMetaCache({ dir: join(dir, 'file-meta'), port: printer.wsPort }),
+    printView: new PrintView({
+      dir: join(dir, 'print-files'),
+      port: printer.wsPort,
+      detail: async (taskId) => {
+        const res = await service.client?.historyTaskDetail([taskId]);
+        const task = (res?.Data as { HistoryDetailList?: Record<string, string>[] })
+          ?.HistoryDetailList?.[0];
+        return task?.TaskName
+          ? { taskName: task.TaskName, thumbnailUrl: task.Thumbnail }
+          : undefined;
+      },
+    }),
   });
 });
 
@@ -67,6 +81,14 @@ afterEach(async () => {
 });
 
 const settle = () => new Promise((r) => setTimeout(r, 120));
+
+async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > until) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
 
 describe('GET /health', () => {
   it('reports connected once the printer is attached', async () => {
@@ -286,21 +308,14 @@ describe('uploading a realistically-sized file', () => {
     expect(res.json().md5).toBe(expected);
   });
 
-  it('keeps the slicer preview of an uploaded .goo, and serves it', async () => {
+  it("reads a file's preview and details from the file on the printer", async () => {
     await settle();
-    // The same layout as a real .goo header: see goo-preview.ts.
-    const header = Buffer.alloc(194);
-    header.write('V3.0', 0, 'latin1');
-    Buffer.from([0x07, 0, 0, 0, 0x44, 0x4c, 0x50, 0]).copy(header, 4);
-    const goo = Buffer.concat([
-      header,
-      Buffer.alloc(116 * 116 * 2),
-      Buffer.from('\r\n'),
-      Buffer.alloc(290 * 290 * 2, 0x55),
-      Buffer.from('\r\n'),
-      Buffer.alloc(4096),
-    ]);
-
+    const goo = syntheticGoo({
+      width: 80,
+      height: 40,
+      layers: [() => true, (x) => x < 40],
+      printTimeS: 5300,
+    });
     const upload = await app.inject({
       method: 'POST',
       url: '/api/upload',
@@ -308,14 +323,72 @@ describe('uploading a realistically-sized file', () => {
       payload: goo,
     });
     expect(upload.statusCode).toBe(200);
-    expect(upload.json()).toMatchObject({ path: '/local/rook.goo', preview: true });
 
-    const preview = await app.inject({ method: 'GET', url: '/api/preview/rook.goo' });
+    const meta = await app.inject({ method: 'GET', url: '/api/files/meta?path=/local/rook.goo' });
+    expect(meta.json()).toMatchObject({ layerCount: 2, printTimeS: 5300, preview: true });
+
+    const preview = await app.inject({
+      method: 'GET',
+      url: '/api/files/preview?path=/local/rook.goo',
+    });
     expect(preview.statusCode).toBe(200);
     expect(preview.headers['content-type']).toBe('image/png');
 
-    const none = await app.inject({ method: 'GET', url: '/api/preview/never-uploaded.goo' });
+    const none = await app.inject({
+      method: 'GET',
+      url: '/api/files/preview?path=/local/nope.goo',
+    });
     expect(none.statusCode).toBe(404);
+  });
+
+  it('refuses to fetch anything from the printer but print files', async () => {
+    // The printer's web server also serves its WiFi password.
+    await settle();
+    for (const path of ['/media/mmcblk0p1/wlan_entry', '/local/../mmcblk0p1/wlan_entry']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/files/preview?path=${encodeURIComponent(path)}`,
+      });
+      expect(res.statusCode).toBe(404);
+    }
+  });
+
+  it("shows the current print's thumbnail and the layer being printed", async () => {
+    await settle();
+    // Layer 0 all lit; every later layer dark.
+    const goo = syntheticGoo({
+      width: 80,
+      height: 40,
+      layers: [() => true, ...Array.from({ length: 119 }, () => () => false)],
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'layers.goo' },
+      payload: goo,
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/print',
+      payload: { filename: '/local/layers.goo' },
+    });
+    await waitFor(
+      () => store.snapshot().print.taskId !== undefined && store.snapshot().print.taskId !== '',
+    );
+
+    const thumb = await app.inject({ method: 'GET', url: '/api/print/thumbnail' });
+    expect(thumb.statusCode).toBe(200);
+    expect(thumb.headers['content-type']).toBe('image/png');
+
+    // The print file comes from the printer first: 202 until it has.
+    let layer = await app.inject({ method: 'GET', url: '/api/print/layer?layer=0' });
+    for (let i = 0; i < 50 && layer.statusCode === 202; i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      layer = await app.inject({ method: 'GET', url: '/api/print/layer?layer=0' });
+    }
+    expect(layer.statusCode).toBe(200);
+    expect(layer.headers['content-type']).toBe('image/png');
+    expect(layer.headers['x-layer']).toBe('0');
   });
 
   it('still rejects a non-.goo/.ctb file, however large', async () => {

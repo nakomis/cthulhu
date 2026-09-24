@@ -5,9 +5,9 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { listPrintableFiles } from './file-list.js';
-import { extractGooPreview } from './goo-preview.js';
+import type { FileMetaCache } from './file-meta.js';
 import type { History } from './history.js';
-import type { PreviewStore } from './previews.js';
+import type { PrintView } from './print-view.js';
 import type { PrinterService } from './printer.js';
 import type { PrinterStore } from './store.js';
 import { registerWs } from './ws.js';
@@ -20,13 +20,26 @@ export interface BuildAppOptions {
   printer?: PrinterService;
   history?: History;
   camera?: CameraProxy;
-  /** Where upload previews are kept. Without it, uploads take none. */
-  previews?: PreviewStore;
+  /** Previews and details of print files, read from the printer. */
+  fileMeta?: FileMetaCache;
+  /** The current print's thumbnail and layer images. */
+  printView?: PrintView;
   logger?: boolean;
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
-  const { config, store, printer, history, camera, previews, webRoot, logger = false } = options;
+  const {
+    config,
+    store,
+    printer,
+    history,
+    camera,
+    fileMeta,
+    printView,
+    webRoot,
+    logger = false,
+  } = options;
+  const printerAddress = () => store.snapshot().address ?? config.printerIp;
   const app = Fastify({ logger });
 
   // Registered before the routes that use it, and before the static handler,
@@ -143,10 +156,57 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     done(null, body),
   );
 
-  app.get<{ Params: { name: string } }>('/api/preview/:name', async (request, reply) => {
-    const png = previews?.load(request.params.name);
+  // ---- Print files: previews and details, from the files themselves -------
+  app.get<{ Querystring: { path?: string } }>('/api/files/meta', async (request, reply) => {
+    const address = printerAddress();
+    const path = request.query.path;
+    if (!fileMeta || !address || !path) return reply.code(404).send({ error: 'Unavailable' });
+    const meta = await fileMeta.meta(address, path).catch(() => undefined);
+    if (!meta) return reply.code(404).send({ error: 'No details for that file' });
+    return meta;
+  });
+
+  app.get<{ Querystring: { path?: string } }>('/api/files/preview', async (request, reply) => {
+    const address = printerAddress();
+    const path = request.query.path;
+    if (!fileMeta || !address || !path) return reply.code(404).send({ error: 'Unavailable' });
+    const png = await fileMeta.preview(address, path).catch(() => undefined);
     if (!png) return reply.code(404).send({ error: 'No preview for that file' });
-    return reply.type('image/png').header('Cache-Control', 'no-cache').send(png);
+    return reply.type('image/png').header('Cache-Control', 'max-age=300').send(png);
+  });
+
+  // ---- The current print: the printer's thumbnail, and the layer --------
+  const currentTask = () => {
+    const { taskId, currentLayer } = store.snapshot().print;
+    const address = printerAddress();
+    return taskId && address ? { taskId, address, currentLayer: currentLayer ?? 0 } : undefined;
+  };
+
+  app.get('/api/print/thumbnail', async (_request, reply) => {
+    const task = currentTask();
+    if (!printView || !task) return reply.code(404).send({ error: 'Nothing printing' });
+    const png = await printView.thumbnail(task.address, task.taskId).catch(() => undefined);
+    if (!png) return reply.code(404).send({ error: 'No thumbnail for this print' });
+    return reply.type('image/png').header('Cache-Control', 'max-age=3600').send(png);
+  });
+
+  // PNG when ready; 202 with progress while the print file is still coming
+  // from the printer, so the page can say so rather than show nothing.
+  app.get<{ Querystring: { layer?: string } }>('/api/print/layer', async (request, reply) => {
+    const task = currentTask();
+    if (!printView || !task) return reply.code(404).send({ error: 'Nothing printing' });
+    const asked = Number(request.query.layer);
+    const index = Number.isInteger(asked) && asked >= 0 ? asked : task.currentLayer;
+    const result = await printView.layer(task.address, task.taskId, index);
+    if (result.state === 'ready') {
+      return reply
+        .type('image/png')
+        .header('X-Layer', String(result.layer))
+        .header('Cache-Control', 'no-cache')
+        .send(result.png);
+    }
+    if (result.state === 'downloading') return reply.code(202).send(result);
+    return reply.code(502).send({ error: result.error });
   });
 
   app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {
@@ -180,11 +240,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
       const path = await client.confirmUploaded(filename);
-      // Now or never: the printer cannot send a file back, so a preview can
-      // only be taken from the bytes on their way in.
-      const png = previews ? extractGooPreview(body) : undefined;
-      if (png) previews?.save(filename, png);
-      return { ...result, path, preview: png !== undefined };
+      return { ...result, path };
     } catch (err) {
       if (err instanceof UploadError || err instanceof UploadRejectedError) {
         return reply.code(502).send({ error: err.message });

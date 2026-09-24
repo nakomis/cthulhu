@@ -1,10 +1,6 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { afterEach, describe, expect, it } from 'vitest';
-import { extractGooPreview } from './goo-preview.js';
-import { PreviewStore } from './previews.js';
+import { describe, expect, it } from 'vitest';
+import { extractGooPreview } from './preview.js';
 
 /** A .goo header laid out like a real one, the big preview a single colour. */
 function goo({ colour = 0xf800, magic = true, crlf = true } = {}): Buffer {
@@ -51,26 +47,5 @@ describe('extractGooPreview', () => {
     expect(extractGooPreview(goo({ crlf: false }))).toBeUndefined();
     expect(extractGooPreview(goo().subarray(0, 50_000))).toBeUndefined();
     expect(extractGooPreview(Buffer.from('a .ctb, say'))).toBeUndefined();
-  });
-});
-
-describe('PreviewStore', () => {
-  let dir: string;
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-  it('keeps one preview per file name, whatever path it arrives with', () => {
-    dir = mkdtempSync(join(tmpdir(), 'previews-'));
-    const store = new PreviewStore(dir);
-    store.save('keystamp.goo', Buffer.from('png'));
-    expect(store.load('/local/keystamp.goo')?.toString()).toBe('png');
-    expect(store.load('other.goo')).toBeUndefined();
-  });
-
-  it('cannot be walked out of its folder', () => {
-    dir = mkdtempSync(join(tmpdir(), 'previews-'));
-    const store = new PreviewStore(dir);
-    store.save('../../etc/passwd', Buffer.from('x'));
-    expect(store.load('passwd')?.toString()).toBe('x');
-    expect(store.load('..')).toBeUndefined();
   });
 });

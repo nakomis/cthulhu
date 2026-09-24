@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api, type PrinterView } from './api.js';
 import { Camera } from './Camera.js';
 import { Files } from './Files.js';
+import { Layer } from './Layer.js';
 import {
   canPause,
   canResume,
@@ -101,7 +102,7 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
               <p className="mt-1 truncate text-sm text-slate-400">{print.filename}</p>
             ) : null}
           </div>
-          {print?.filename ? <Preview key={print.filename} filename={print.filename} /> : null}
+          {print?.taskId ? <Preview key={print.taskId} taskId={print.taskId} /> : null}
         </section>
 
         <section className="rounded-lg border border-slate-700 p-4">
@@ -146,6 +147,10 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
           ) : null}
         </section>
 
+        {print?.taskId && active ? (
+          <Layer key={print.taskId} layer={print.currentLayer ?? 0} totalLayer={print.totalLayer} />
+        ) : null}
+
         <Camera />
 
         <Files busy={active} onChanged={() => void refresh()} />
@@ -182,20 +187,18 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
 }
 
 /**
- * The slicer's preview of the file being printed, when cthulhu has one - it
- * can only take one from a file uploaded through it. Otherwise nothing: a
- * broken-image icon would say something is wrong when nothing is.
+ * The printer's own thumbnail of the print - it keeps one per task, so this
+ * works however the print was started. Nothing, not a broken image, if not.
  */
-function Preview({ filename }: { filename: string }) {
+function Preview({ taskId }: { taskId: string }) {
   const [missing, setMissing] = useState(false);
   if (missing) return null;
-  const name = filename.split('/').pop() ?? filename;
   return (
     <img
-      src={`/api/preview/${encodeURIComponent(name)}`}
-      alt={`Slicer preview of ${name}`}
+      src={`/api/print/thumbnail?task=${encodeURIComponent(taskId)}`}
+      alt="Preview of the print"
       onError={() => setMissing(true)}
-      className="size-24 shrink-0 rounded bg-black object-contain sm:size-28"
+      className="h-24 w-32 shrink-0 rounded bg-black object-contain sm:h-28 sm:w-36"
     />
   );
 }

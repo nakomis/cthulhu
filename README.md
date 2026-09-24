@@ -87,6 +87,10 @@ Found against an Elegoo Mars 5 Ultra, firmware V1.5.0, on 23–24 September
 | `CurrentTicks` / `TotalTicks` are milliseconds | The touchscreen's 2 h 14 m matched |
 | A normal print ends 7 (Stopping) → 9 (Complete) | Status 7 with no layers left is labelled "Finishing" |
 | Uploads run at about 100 KB/s over the printer's WiFi | 13 MB takes about two and a half minutes |
+| The printer runs a web server (Mongoose) on port 3030 that serves its filesystem **by path**, with Range support: `/media/mmcblk0p3/` is internal storage (SDCP's `/local`), `/media/sda1/` the USB stick | Previews and details are read from each file's own header; the current print's file is fetched to draw its layers. Downloads are fast - seconds for 13 MB |
+| That web server is unauthenticated and serves everything, **including the WiFi password in plain text** (`/media/mmcblk0p1/wlan_entry`) | cthulhu only ever fetches `.goo`/`.ctb` under the two storage roots. The real fix is network isolation |
+| Cmd 321 works for the print in progress, giving the file's full path (`TaskName`) and a 400×300 thumbnail URL | The Status panel's picture, for however the print was started |
+| `.goo` layers: 0x55, runs, a checksum (bitwise NOT of the byte sum). A run's length keeps its **low** 4 bits in the lead byte | `packages/goo`, proven against every layer of a real file |
 
 ## The camera
 

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type PrinterFile } from './api.js';
+import { api, type FileMeta, type PrinterFile } from './api.js';
 
 export interface FilesProps {
   /** Injected in tests. */
   listFiles?: () => Promise<PrinterFile[]>;
   uploadFile?: (file: File) => Promise<unknown>;
   startPrint?: (filename: string) => Promise<unknown>;
+  fileMeta?: (path: string) => Promise<FileMeta | undefined>;
   onChanged?: () => void;
   /** Whether a print is already running; starting another would be refused. */
   busy?: boolean;
@@ -15,6 +16,7 @@ export function Files({
   listFiles = api.files,
   uploadFile = api.upload,
   startPrint = api.startPrint,
+  fileMeta = api.fileMeta,
   onChanged,
   busy = false,
 }: FilesProps) {
@@ -103,12 +105,14 @@ export function Files({
       ) : (
         <ul className="mt-3 space-y-2">
           {files.map((f) => (
-            <li key={f.path} className="flex items-center justify-between gap-2">
-              <span className="min-w-0">
+            <li key={f.path} className="flex items-center justify-between gap-3">
+              <FilePreview path={f.path} name={f.name} />
+              <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm">{f.name}</span>
                 <span className="block truncate text-xs text-slate-500">
                   {f.storage === 'usb' ? 'USB stick' : 'Printer'}
                   {f.folder ? ` · ${f.folder}` : ''}
+                  <FileDetails path={f.path} fileMeta={fileMeta} />
                 </span>
               </span>
               <button
@@ -132,4 +136,59 @@ export function uploadEstimate(bytes: number): string {
   const seconds = Math.round((bytes / (1024 * 1024)) * 11);
   if (seconds < 20) return '';
   return seconds < 90 ? ' (about a minute)' : ` (about ${Math.round(seconds / 60)} min)`;
+}
+
+/**
+ * The slicer's preview, read from the file on the printer - so it is there
+ * for every .goo, whoever put it there. Nothing at all (not a broken-image
+ * icon) for a file without one: a .ctb, say.
+ */
+function FilePreview({ path, name }: { path: string; name: string }) {
+  const [missing, setMissing] = useState(false);
+  if (missing) return <span className="size-12 shrink-0 rounded bg-slate-800" />;
+  return (
+    <img
+      src={`/api/files/preview?path=${encodeURIComponent(path)}`}
+      alt={`Preview of ${name}`}
+      loading="lazy"
+      onError={() => setMissing(true)}
+      className="size-12 shrink-0 rounded bg-black object-contain"
+    />
+  );
+}
+
+/** " · 893 layers · about 1 h 28 m", once the file's header has been read. */
+function FileDetails({
+  path,
+  fileMeta,
+}: {
+  path: string;
+  fileMeta: (path: string) => Promise<FileMeta | undefined>;
+}) {
+  const [meta, setMeta] = useState<FileMeta | undefined>();
+  useEffect(() => {
+    let live = true;
+    fileMeta(path)
+      .then((m) => {
+        if (live) setMeta(m);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [path, fileMeta]);
+  if (!meta) return null;
+  return (
+    <>
+      {` · ${meta.layerCount} layers`}
+      {meta.printTimeS > 0 ? ` · about ${formatDuration(meta.printTimeS)}` : ''}
+    </>
+  );
+}
+
+export function formatDuration(seconds: number): string {
+  const minutes = Math.round(seconds / 60);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h} h ${String(m).padStart(2, '0')} m` : `${m} m`;
 }

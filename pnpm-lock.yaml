@@ -39,6 +39,9 @@ importers:
       '@cthulhu/camera':
         specifier: workspace:*
         version: link:../../packages/camera
+      '@cthulhu/goo':
+        specifier: workspace:*
+        version: link:../../packages/goo
       '@cthulhu/sdcp':
         specifier: workspace:*
         version: link:../../packages/sdcp
@@ -190,6 +193,21 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      '@vitest/coverage-v8':
+        specifier: ^5.0.1
+        version: 5.0.1(vitest@5.0.1)
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^5.0.1
+        version: 5.0.1(@types/node@26.6.2)(@vitest/coverage-v8@5.0.1)(jsdom@30.1.1)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
+  packages/goo:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.2
+        version: 26.6.2
       '@vitest/coverage-v8':
         specifier: ^5.0.1
         version: 5.0.1(vitest@5.0.1)
