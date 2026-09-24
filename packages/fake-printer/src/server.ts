@@ -129,8 +129,13 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
 
     // ---- File upload ------------------------------------------------------
     // Implements the OFFICIAL spec, not the shape an earlier guess used:
-    // multipart/form-data in 1 MB packets carrying Check / Offset / Uuid /
-    // TotalSize / File, with the whole-file MD5 in an S-File-MD5 header.
+    // multipart/form-data in 1 MB packets carrying S-File-MD5 / Check /
+    // Offset / Uuid / TotalSize / File. S-File-MD5 is a FORM FIELD: the real
+    // Mars 5 Ultra ignores a header of that name, and so does this.
+    //
+    // Like the real printer, a failed check is NOT an HTTP failure. Every
+    // packet is answered success:true; the verdict arrives afterwards on the
+    // WebSocket as sdcp/error, and the file is discarded.
     // Reassembles by offset, because that is what the printer does and it is
     // why offset mismatch has its own error code.
     if (url.pathname === '/uploadFile/upload' && req.method === 'POST') {
@@ -168,7 +173,7 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
         const totalSize = Number(field('TotalSize'));
         const uuid = field('Uuid') ?? '';
         const check = field('Check') === '1';
-        const claimedMd5 = req.headers['s-file-md5'] as string | undefined;
+        const claimedMd5 = field('S-File-MD5');
         const filename = filePart?.filename ?? 'unnamed.goo';
 
         if (!Number.isInteger(offset) || offset < 0) {
@@ -200,10 +205,20 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
         if (complete) {
           partials.delete(uuid);
           const actual = createHash('md5').update(existing.received).digest('hex');
-          if (check && claimedMd5 && claimedMd5 !== actual) {
-            // ErrorNumber 1 in PrintInfo is "MD5 Check Failed"; refusing here
-            // is the transfer-time equivalent.
-            fail('-4', `md5 mismatch (expected ${actual})`);
+          // A MISSING MD5 fails too: that is how the real printer treated
+          // every file while cthulhu sent it as a header.
+          if (check && claimedMd5?.toLowerCase() !== actual) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ code: '000000', messages: null, data: {}, success: true }));
+            broadcast({
+              Id: randomUUID().replace(/-/g, ''),
+              Data: {
+                MainboardID: mainboardId,
+                TimeStamp: Math.floor(Date.now() / 1000),
+                Data: { ErrorCode: 1 },
+              },
+              Topic: topics.error(mainboardId),
+            });
             return;
           }
           uploads.set(filename, { filename, size: existing.received.length, md5: actual });
@@ -293,7 +308,11 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           return;
 
         case Cmd.StartPrint: {
-          const filename = typeof payload.Filename === 'string' ? payload.Filename : '';
+          // The spec takes a name or a path; no leading "/" means /local/.
+          const filename = (typeof payload.Filename === 'string' ? payload.Filename : '').replace(
+            /^\/local\//,
+            '',
+          );
           let ack: number = StartPrintAck.Ok;
           if (state.isPrinting) ack = StartPrintAck.Busy;
           else if (!knownFiles.has(filename)) ack = StartPrintAck.NotFound;
@@ -341,7 +360,8 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
                 Cmd: cmd,
                 Data: {
                   Ack: 0,
-                  FileList: [...knownFiles].map((name) => ({ name, type: 1 })),
+                  // The real printer lists full paths: /local/keystamp.goo.
+                  FileList: [...knownFiles].map((name) => ({ name: `/local/${name}`, type: 1 })),
                 },
                 RequestID: requestId,
                 MainboardID: mainboardId,

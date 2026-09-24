@@ -115,6 +115,12 @@ export async function uploadFile(options: UploadOptions): Promise<UploadResult> 
     const slice = data.subarray(offset, Math.min(offset + UPLOAD_CHUNK_BYTES, total));
 
     const form = new FormData();
+    // S-File-MD5 as a FORM FIELD. The spec lists it with the other request
+    // parameters; the Mars 5 Ultra (firmware V1.5.0) ignores the header of the
+    // same name, fails every file's MD5 check, publishes sdcp/error
+    // ErrorCode 1, and deletes it - while still answering success:true to
+    // every packet. Sent as a header as well, which does no harm.
+    form.set('S-File-MD5', md5);
     form.set('Check', check ? '1' : '0');
     form.set('Offset', String(offset));
     form.set('Uuid', uuid);

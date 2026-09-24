@@ -5,6 +5,7 @@ import {
   type CmdValue,
   HEARTBEAT_REQUEST,
   HEARTBEAT_RESPONSE,
+  MachineStatus,
   START_PRINT_ACK_MESSAGES,
   StartPrintAck,
   topics,
@@ -79,10 +80,45 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Published on sdcp/error. */
+export interface PrinterErrorEvent {
+  /** {@link PrinterErrorCode}; undefined if the frame carried none. */
+  errorCode: number | undefined;
+  raw: Record<string, unknown>;
+}
+
+/** sdcp/error codes, from the spec's `sdcp_normal_error_t`. */
+export const PrinterErrorCode = {
+  Md5Failed: 1,
+  FormatFailed: 2,
+} as const;
+
+const PRINTER_ERROR_MESSAGES: Record<number, string> = {
+  [PrinterErrorCode.Md5Failed]: 'file transfer MD5 check failed',
+  [PrinterErrorCode.FormatFailed]: 'file format is incorrect',
+};
+
+/** The printer took every packet of an upload, then refused the file. */
+export class UploadRejectedError extends SdcpError {
+  readonly errorCode: number | undefined;
+
+  constructor(filename: string, errorCode: number | undefined) {
+    super(
+      errorCode === undefined
+        ? `${filename} never appeared on the printer after uploading`
+        : `The printer rejected ${filename}: ${
+            PRINTER_ERROR_MESSAGES[errorCode] ?? `error code ${errorCode}`
+          } (${errorCode})`,
+    );
+    this.errorCode = errorCode;
+  }
+}
+
 export interface SdcpClientEvents {
   status: [PrinterStatus];
   attributes: [PrinterAttributes];
   error: [Error];
+  printerError: [PrinterErrorEvent];
   notice: [Record<string, unknown>];
   open: [];
   close: [];
@@ -272,6 +308,11 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
       return;
     }
     if (topic.startsWith('sdcp/error/')) {
+      // { Data: { Data: { ErrorCode } } }. Tolerate one level less nesting.
+      const outer = (frame.Data ?? {}) as Record<string, unknown>;
+      const inner = (outer.Data ?? outer) as Record<string, unknown>;
+      const errorCode = typeof inner.ErrorCode === 'number' ? inner.ErrorCode : undefined;
+      this.emit('printerError', { errorCode, raw: frame });
       this.emit('error', new SdcpError(`Printer error: ${text.slice(0, 300)}`));
       return;
     }
@@ -395,6 +436,56 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
   }
 
   /** Throws StartPrintError on any non-zero ack, so callers see a real reason. */
+  /**
+   * Wait for the printer's verdict on a file just uploaded over HTTP.
+   *
+   * The upload endpoint answers success:true to every packet, including the
+   * last, and only THEN checks the file. A failure arrives separately, as
+   * sdcp/error, and the file is deleted. So an upload has succeeded only once
+   * the printer has finished with it (machine status no longer includes
+   * FileTransferring), no error arrived, and the file is listed in /local.
+   *
+   * Waiting for the status to clear matters when re-uploading a file of the
+   * same name: the old copy is listed throughout, and the error beats the
+   * status change by around a second on the Mars 5 Ultra.
+   */
+  async confirmUploaded(
+    filename: string,
+    { timeoutMs = 30_000, intervalMs = 1000 }: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<string> {
+    const base = filename.split('/').pop() ?? filename;
+    const target = `/local/${base}`;
+    let errorCode: number | undefined;
+    let rejected = false;
+    const onPrinterError = (e: PrinterErrorEvent) => {
+      rejected = true;
+      errorCode = e.errorCode;
+    };
+    this.on('printerError', onPrinterError);
+    try {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        if (rejected) throw new UploadRejectedError(base, errorCode);
+        if (!this.transferring) {
+          const list = await this.listFiles('/local');
+          const data = (list.Data ?? list) as { FileList?: { name?: unknown }[] };
+          const names = (data.FileList ?? []).map((f) => String(f.name));
+          if (rejected) throw new UploadRejectedError(base, errorCode);
+          if (names.includes(target) || names.includes(base)) return target;
+        }
+        if (Date.now() >= deadline) throw new UploadRejectedError(base, undefined);
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    } finally {
+      this.off('printerError', onPrinterError);
+    }
+  }
+
+  /** True while the last status frame said a file transfer is in progress. */
+  private get transferring(): boolean {
+    return (this.lastStatus?.machineStatus ?? []).includes(MachineStatus.FileTransferring);
+  }
+
   async startPrint(filename: string, startLayer = 0): Promise<void> {
     const ack = await this.send(Cmd.StartPrint, { Filename: filename, StartLayer: startLayer });
     const code =
