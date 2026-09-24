@@ -24,6 +24,8 @@ If you find this useful, please consider buying me a coffee:
 - [The protocol](#the-protocol)
 - [What the real printer taught us](#what-the-real-printer-taught-us)
 - [The camera](#the-camera)
+- [Print history and time-lapse storage](#print-history-and-time-lapse-storage)
+  * [Migrating history from SQLite to Postgres](#migrating-history-from-sqlite-to-postgres)
 - [Development](#development)
   * [Running against a printer](#running-against-a-printer)
 - [Deployment](#deployment)
@@ -40,11 +42,11 @@ If you find this useful, please consider buying me a coffee:
 | `packages/sdcp/` | The SDCP protocol client. Deliberately free of web and storage concerns, so it is independently testable and publishable on its own merits. |
 | `packages/camera/` | Camera plumbing shared by both apps: one upstream shared between viewers, and RTSP to MJPEG through ffmpeg. |
 | `packages/fake-printer/` | A fake Mars 5 Ultra for tests and local development, shaped from real captures. |
-| `apps/server/` | Fastify server: REST, WebSocket push, camera proxy, SQLite history, notifications. |
-| `apps/camera/` | The camera transcoder, run off Luke: pulls the printer's RTSP stream and serves it as MJPEG over HTTP. |
+| `apps/server/` | Fastify server: REST, WebSocket push, camera proxy, print history (SQLite or Postgres), notifications. |
+| `apps/camera/` | The camera transcoder, run off Luke: pulls the printer's RTSP stream and serves it as MJPEG over HTTP, and assembles time-lapses. |
 | `apps/web/` | React + Vite + Tailwind dashboard. |
 | `infra/` | CDK. **Only** a GitHub CI role — Cthulhu has no AWS runtime. |
-| `docker/` | Dockerfile and compose file for the deployment on Luke. |
+| `docker/` | `Dockerfile` (the server) and `camera.Dockerfile` (the camera service), plus the compose file for the deployment on Luke. |
 | `docs/architecture/` | Architecture diagrams (drawio source, SVG auto-generated on commit). |
 
 ## The protocol
@@ -119,6 +121,66 @@ browser ──mTLS──> Leia ──> cthulhu on Luke ──HTTP MJPEG──> a
 ```bash
 PRINTER_IP=172.29.0.37 pnpm --filter @cthulhu/camera-service start   # http://localhost:9121/video
 ```
+
+The camera service runs natively today, but `docker/camera.Dockerfile` builds
+it as a container - no native dependencies, so it is genuinely multi-arch
+(`linux/amd64` and `linux/arm64`), unlike the server image. Two envs matter
+only in that container:
+
+- `RTP_PORT_MIN` / `RTP_PORT_MAX` — a fixed range of local UDP ports for
+  ffmpeg's RTP receive, both or neither. Docker Desktop on macOS cannot use
+  host networking, and a bridged container's ephemeral RTP ports are not
+  reachable from outside at all unless every one is published, so phi needs
+  `-p 50000-50009:50000-50009/udp` with a matching `RTP_PORT_MIN=50000
+  RTP_PORT_MAX=50009`. Harmless, and unnecessary, under Linux host networking
+  (Luke, Rey).
+- `TIMELAPSE_DIR` / `TIMELAPSE_FPS` — see
+  [Print history and time-lapse storage](#print-history-and-time-lapse-storage).
+
+## Print history and time-lapse storage
+
+The server is moving off Luke into Docker on phi, and later Rey, but its
+storage stays on Luke: print history in Postgres, finished time-lapses on a
+Samba share. SQLite must never live on a network share — WAL and locking do
+not work over Samba/NFS — which is why history has two implementations. See
+CTHU-15 and CTHU-16.
+
+- **History**: SQLite (`DATABASE_PATH`, default `/data/cthulhu.sqlite`) is the
+  default, and fine for development or a deployment where the server and its
+  data are on the same box. Set `DATABASE_URL` (a Postgres connection string,
+  e.g. `postgres://user:pass@luke:5432/cthulhu`) to use Postgres instead - the
+  table is created on the way in if it does not exist yet. Both
+  implementations share the same semantics: a restart mid-print never creates
+  a duplicate open row for the same task, and `finishPrint` always closes
+  whichever row is still open.
+- **Time-lapse archive**: set `TIMELAPSE_ARCHIVE_DIR` to a directory - a Samba
+  share mounted into the container - and the server periodically (every 60s,
+  and promptly after a print finishes) moves every `ready` time-lapse off the
+  camera service and onto it: downloaded to `<id>.mp4.part`, renamed to
+  `<id>.mp4`, a `<id>.json` written alongside it, and only then is the camera
+  service asked to delete its own copy (`DELETE /timelapse/:id`). A failure at
+  any point - the share or the camera service unreachable - just retries next
+  tick; the camera service's copy is never deleted before the archive's own
+  copy exists on disk, so there is always at least one copy somewhere. Leave
+  it unset and time-lapses stay exactly where they are today, on the camera
+  service's own disk.
+
+### Migrating history from SQLite to Postgres
+
+A one-off CLI, built alongside the server:
+
+```bash
+node apps/server/dist/migrate-history.js \
+  --sqlite /mnt/data/cthulhu/cthulhu.sqlite \
+  --database-url postgres://user:pass@luke:5432/cthulhu
+# or: SQLITE_PATH=... DATABASE_URL=... node apps/server/dist/migrate-history.js
+```
+
+Idempotent, so it is safe to run more than once - a second pass while the old
+and new servers overlap, say. A row with a `task_id` already in Postgres is
+skipped; a row with no `task_id` (older prints, from before every print
+reliably got one) is matched and skipped by its `started_at` timestamp
+instead, since that is all such a row has to identify it by.
 
 ## Development
 

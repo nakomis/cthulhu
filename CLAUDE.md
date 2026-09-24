@@ -62,6 +62,16 @@ or the status parser.
   any blocked build script, which duplicates the key and makes the file invalid
   YAML.
 - Biome needs `css.parser.tailwindDirectives` for Tailwind 4's `@theme`.
+- **TypeScript 7's `erasableSyntaxOnly` forbids constructor parameter
+  properties** (`constructor(private readonly db: X) {}`) - they need runtime
+  code to emit, so they are not erasable. Assign the field in the constructor
+  body instead. Found writing `PostgresHistory` (CTHU-15).
+- **`pg` (the Postgres driver) is pure JS - no native build, no AVX risk on
+  Luke.** History has two implementations behind one `HistoryStore` interface:
+  SQLite (default, `DATABASE_PATH`) and Postgres (`DATABASE_URL`), because
+  SQLite must never live on a network share (WAL/locking break over Samba).
+  The Postgres one is tested against `@electric-sql/pglite` (WASM Postgres,
+  devDependency) rather than a mock or a real server - real SQL, no daemon.
 
 ## Repository layout
 
