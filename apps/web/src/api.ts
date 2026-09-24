@@ -15,6 +15,10 @@ export interface PrinterView {
     taskId: string | undefined;
   };
   releaseFilmState: number | undefined;
+  /** Layers printed on the current film. */
+  releaseFilmUses?: number | undefined;
+  /** Recommended film life in layers. */
+  releaseFilmMax?: number | undefined;
   attributes: { machineName?: string; xyzSize?: string } | undefined;
   updatedAt: string | undefined;
 }
@@ -38,20 +42,22 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export interface PrinterFile {
+  /** Full path, which is what starting a print takes. */
+  path: string;
   name: string;
+  storage: 'local' | 'usb';
+  /** Folder relative to the storage root; '' at the top. */
+  folder: string;
 }
 
 export const api = {
   files: async (): Promise<PrinterFile[]> => {
     const res = await fetch('/api/files');
     if (!res.ok) return [];
-    // The ack nests the payload under Data, but how deeply is exactly the sort
-    // of thing the FDM-derived docs get wrong, so accept either shape rather
-    // than silently rendering an empty list.
-    const body = (await res.json()) as {
-      Data?: { FileList?: PrinterFile[]; Data?: { FileList?: PrinterFile[] } };
-    };
-    return body.Data?.FileList ?? body.Data?.Data?.FileList ?? [];
+    // The server walks /local and the USB stick and flattens the printer's
+    // nested replies, so this is already a plain list.
+    const body = (await res.json()) as { files?: PrinterFile[] };
+    return body.files ?? [];
   },
   startPrint: (filename: string) =>
     fetch('/api/print', {

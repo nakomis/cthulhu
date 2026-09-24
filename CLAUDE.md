@@ -26,9 +26,15 @@ Three fields are misspelled in the wire format and must be reproduced exactly:
 `CurrenCoord`, `RelaseFilmState`, `MaximumCloudSDCPSercicesAllowed`. Never
 "correct" them. `readMisspelled()` in `packages/sdcp` reads either spelling.
 
-`MaximumVideoStreamAllowed` is **1**. The camera proxy must hold one upstream
-connection and fan it out, and drop it when nobody is watching, or the Elegoo
-app stops working.
+`MaximumVideoStreamAllowed` is **2** on the real printer, not the 1 first
+assumed. The camera proxy still holds one upstream connection and fans it out,
+and drops it when nobody is watching, so the second slot stays free for the
+Elegoo app. Send exactly one Cmd 386 enable per upstream and one disable when
+it closes, however it closes: the printer counts them, and its count can stick.
+
+The README's **What the real printer taught us** table lists every place the
+Mars 5 Ultra departs from the spec. Read it before touching uploads, the camera
+or the status parser.
 
 ## Stack
 

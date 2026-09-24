@@ -64,8 +64,10 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
   });
 
   child.stderr?.on('data', (d: Buffer) => {
-    const line = d.toString().trim();
-    if (line) onLog?.(`ffmpeg: ${line}`);
+    for (const raw of d.toString().split('\n')) {
+      const line = raw.trim();
+      if (line && !isDecoderNoise(line)) onLog?.(`ffmpeg: ${line}`);
+    }
   });
 
   return {
@@ -82,4 +84,26 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
       child.once('exit', () => clearTimeout(force));
     },
   };
+}
+
+/**
+ * Chatter from the real printer's stream that is expected and harmless: the
+ * H.264 decoder waiting for its first keyframe, and RTP packets lost or
+ * reordered over WiFi (it is UDP). Left in, it buried Luke's log - several
+ * lines a second per viewer - and any line that mattered with it.
+ */
+const DECODER_NOISE = [
+  /non-existing PPS \d+ referenced/,
+  /^Last message repeated/,
+  /no frame!$/,
+  /decode_slice_header error/,
+  /RTP: PT=\d+: bad cseq/,
+  /cabac decode of qscale diff failed/,
+  /error while decoding MB/,
+  /concealing \d+ DC, \d+ AC, \d+ MV errors/,
+  /^\[rtsp @ 0x[0-9a-f]+\]$/,
+];
+
+export function isDecoderNoise(line: string): boolean {
+  return DECODER_NOISE.some((re) => re.test(line));
 }

@@ -1,4 +1,4 @@
-import { type PrinterStatus, PrintStatus } from '@cthulhu/sdcp';
+import { type PrinterStatus, PrintStatus, parseAttributes } from '@cthulhu/sdcp';
 import { describe, expect, it, vi } from 'vitest';
 import { PrinterStore } from './store.js';
 
@@ -105,5 +105,62 @@ describe('printStarted', () => {
     store.applyStatus(status({ status: PrintStatus.Exposuring }));
 
     expect(started).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('what the real Mars 5 Ultra sends', () => {
+  it('labels the Stopping that ends every normal print as Finishing', () => {
+    // A completed print passes through status 7 for ~25 seconds after its
+    // last layer. "Stopping" there reads as though somebody pressed Stop.
+    const store = new PrinterStore();
+    store.applyStatus(
+      status({ status: PrintStatus.Stopping, currentLayer: 1000, totalLayer: 1000 }),
+    );
+    expect(store.snapshot().print.statusLabel).toBe('Finishing');
+  });
+
+  it('still says Stopping when layers were left', () => {
+    const store = new PrinterStore();
+    store.applyStatus(
+      status({ status: PrintStatus.Stopping, currentLayer: 400, totalLayer: 1000 }),
+    );
+    expect(store.snapshot().print.statusLabel).toBe('Stopping');
+  });
+
+  it('takes release film health and life from ATTRIBUTES', () => {
+    // The spec puts DevicesStatus in status; this printer sends it only in
+    // attributes, so the UI said "Unknown" throughout the first real print.
+    const store = new PrinterStore();
+    store.applyAttributes(
+      parseAttributes({
+        Attributes: {
+          ReleaseFilmMax: 60000,
+          CameraStatus: 1,
+          DevicesStatus: { RelaseFilmState: 1, LCDStatus: 1 },
+        },
+      }),
+    );
+    // A status frame without DevicesStatus must not wipe it out again.
+    store.applyStatus({ ...status(), devicesStatus: { releaseFilmState: undefined } } as never);
+
+    const view = store.snapshot();
+    expect(view.releaseFilmState).toBe(1);
+    expect(view.releaseFilmMax).toBe(60000);
+    expect(view.cameraStatus).toBe(1);
+  });
+
+  it('dates a print from the printer ticks, not from when cthulhu first saw it', () => {
+    // The first real print was recorded as starting 24 minutes late: cthulhu
+    // had been redeployed mid-print.
+    const store = new PrinterStore();
+    const started = vi.fn();
+    store.on('printStarted', started);
+    const before = Date.now();
+
+    store.applyStatus(status({ currentTicks: 24 * 60_000 }));
+
+    const startedAt = Date.parse(started.mock.calls[0]?.[0].startedAt);
+    expect(before - startedAt).toBeGreaterThanOrEqual(24 * 60_000 - 1000);
+    expect(before - startedAt).toBeLessThanOrEqual(24 * 60_000 + 1000);
   });
 });

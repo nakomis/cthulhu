@@ -23,13 +23,13 @@ describe('Camera', () => {
     expect(screen.queryByRole('img')).not.toBeInTheDocument();
   });
 
-  it('explains the single-stream limit when the feed fails', async () => {
+  it('says the camera is unavailable when the feed fails', async () => {
     render(<Camera />);
     await userEvent.click(screen.getByRole('button', { name: 'Watch' }));
     const img = await screen.findByRole('img', { name: 'Printer camera' });
 
     img.dispatchEvent(new Event('error'));
-    expect(await screen.findByRole('alert')).toHaveTextContent('one stream at a time');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Camera unavailable');
   });
 });
 

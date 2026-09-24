@@ -38,7 +38,9 @@ export function Files({
 
   const onUpload = async (file: File) => {
     setWorking(true);
-    setMessage(undefined);
+    // Over the printer's WiFi an upload runs at roughly 100 KB/s: 13 MB took
+    // two and a half minutes, with nothing on screen to say it was happening.
+    setMessage(`Uploading ${file.name}${uploadEstimate(file.size)}…`);
     try {
       await uploadFile(file);
       setMessage(`Uploaded ${file.name}`);
@@ -101,12 +103,18 @@ export function Files({
       ) : (
         <ul className="mt-3 space-y-2">
           {files.map((f) => (
-            <li key={f.name} className="flex items-center justify-between gap-2">
-              <span className="truncate text-sm">{f.name}</span>
+            <li key={f.path} className="flex items-center justify-between gap-2">
+              <span className="min-w-0">
+                <span className="block truncate text-sm">{f.name}</span>
+                <span className="block truncate text-xs text-slate-500">
+                  {f.storage === 'usb' ? 'USB stick' : 'Printer'}
+                  {f.folder ? ` · ${f.folder}` : ''}
+                </span>
+              </span>
               <button
                 type="button"
                 disabled={working || busy}
-                onClick={() => void onPrint(f.name)}
+                onClick={() => void onPrint(f.path)}
                 className="shrink-0 rounded border border-tentacle/50 px-3 py-1 text-sm text-tentacle disabled:opacity-40"
               >
                 Print
@@ -117,4 +125,11 @@ export function Files({
       )}
     </section>
   );
+}
+
+/** " (about 2 min)" for a 13 MB file, from what the real printer managed. */
+export function uploadEstimate(bytes: number): string {
+  const seconds = Math.round((bytes / (1024 * 1024)) * 11);
+  if (seconds < 20) return '';
+  return seconds < 90 ? ' (about a minute)' : ` (about ${Math.round(seconds / 60)} min)`;
 }

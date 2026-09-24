@@ -1,8 +1,10 @@
+import { dirname, join } from 'node:path';
 import { buildApp } from './app.js';
 import { CameraProxy } from './camera.js';
 import { ConfigError, loadConfig } from './config.js';
 import { History } from './history.js';
 import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
+import { PreviewStore } from './previews.js';
 import { PrinterService } from './printer.js';
 import { openRtspAsMjpeg } from './rtsp.js';
 import { PrinterStore } from './store.js';
@@ -118,6 +120,9 @@ async function main(): Promise<void> {
     ...(config.webRoot ? { webRoot: config.webRoot } : {}),
     ...(history ? { history } : {}),
     ...(camera ? { camera } : {}),
+    // Beside the database, on the same volume. Not in the nightly backup,
+    // which copies only the SQLite file: a lost preview returns on re-upload.
+    previews: new PreviewStore(join(dirname(config.databasePath), 'previews')),
     logger: true,
   });
 

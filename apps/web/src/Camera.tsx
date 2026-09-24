@@ -39,8 +39,8 @@ export function Camera() {
       {showing ? (
         failed ? (
           <p role="alert" className="mt-3 text-sm text-amber-300">
-            Camera unavailable. The printer allows one stream at a time — check nothing else is
-            watching.
+            Camera unavailable. The printer may have refused the stream, or it could not be
+            converted; cthulhu&rsquo;s log says which.
           </p>
         ) : (
           <div className="relative mt-3">
@@ -63,8 +63,8 @@ export function Camera() {
         )
       ) : (
         <p className="mt-3 text-sm text-slate-500">
-          Not watching. The printer allows only one stream, so it is released when nobody is
-          looking.
+          Not watching. The stream is released when nobody is looking, so the Elegoo app can still
+          connect.
         </p>
       )}
     </section>

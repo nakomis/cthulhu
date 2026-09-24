@@ -135,12 +135,12 @@ export const MachineStatus = {
 } as const;
 
 /**
- * Hard constraint from the printer's attributes: only ONE video stream may be
- * open at a time. The server must therefore hold the single upstream connection
- * and fan it out, and must drop it when nobody is watching so that the Elegoo
- * app still works. See CTHU-6.
+ * MaximumVideoStreamAllowed on the Mars 5 Ultra: 2. The spec-era assumption
+ * was 1. The server still holds a single upstream and fans it out, and drops
+ * it when nobody is watching, so the second slot stays free for the Elegoo
+ * app. The printer's own attributes are the authority; see CTHU-6.
  */
-export const MAX_VIDEO_STREAMS = 1;
+export const MAX_VIDEO_STREAMS = 2;
 
 /** Acknowledgement codes for Cmd 386 (enable/disable the video stream). */
 export const VideoAck = {

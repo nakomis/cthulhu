@@ -103,6 +103,6 @@ describe('start print acks', () => {
 describe('video stream limit', () => {
   // Not a style preference: the camera proxy design depends on this being 1.
   it('is one, which is why the server must multiplex', () => {
-    expect(MAX_VIDEO_STREAMS).toBe(1);
+    expect(MAX_VIDEO_STREAMS).toBe(2);
   });
 });
