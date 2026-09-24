@@ -191,6 +191,38 @@ describe('openRtspAsMjpeg', () => {
     expect(args[args.indexOf('-buffer_size') + 1]).toBe(String(8 * 1024 * 1024));
   });
 
+  it('pins the RTP receive ports when both are given, before -i', () => {
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({
+      url: 'rtsp://x/live',
+      rtpPortMin: 50000,
+      rtpPortMax: 50009,
+      spawnImpl: spawnImpl as never,
+    });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+
+    expect(args[args.indexOf('-min_port') + 1]).toBe('50000');
+    expect(args[args.indexOf('-max_port') + 1]).toBe('50009');
+    expect(args.indexOf('-min_port')).toBeLessThan(args.indexOf('-i'));
+  });
+
+  it('leaves the RTP port range to ffmpeg by default', () => {
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+
+    expect(args).not.toContain('-min_port');
+    expect(args).not.toContain('-max_port');
+  });
+
+  it('ignores a port range with only one end set', () => {
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({ url: 'rtsp://x/live', rtpPortMin: 50000, spawnImpl: spawnImpl as never });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+
+    expect(args).not.toContain('-min_port');
+  });
+
   it('stays quiet about ffmpeg complaining that it was stopped', () => {
     const { child, spawnImpl } = fakeSpawn();
     const logs: string[] = [];
