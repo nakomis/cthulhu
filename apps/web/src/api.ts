@@ -50,7 +50,20 @@ export interface PrinterFile {
   folder: string;
 }
 
+/** Read from the file's own header on the printer. */
+export interface FileMeta {
+  layerCount: number;
+  layerHeightMm: number;
+  /** The slicer's estimate, in seconds. */
+  printTimeS: number;
+  preview: boolean;
+}
+
 export const api = {
+  fileMeta: async (path: string): Promise<FileMeta | undefined> => {
+    const res = await fetch(`/api/files/meta?path=${encodeURIComponent(path)}`);
+    return res.ok ? ((await res.json()) as FileMeta) : undefined;
+  },
   files: async (): Promise<PrinterFile[]> => {
     const res = await fetch('/api/files');
     if (!res.ok) return [];

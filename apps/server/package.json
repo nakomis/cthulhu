@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@cthulhu/camera": "workspace:*",
+    "@cthulhu/goo": "workspace:*",
     "@cthulhu/sdcp": "workspace:*",
     "@fastify/static": "^10.1.4",
     "@fastify/websocket": "^11.3.1",

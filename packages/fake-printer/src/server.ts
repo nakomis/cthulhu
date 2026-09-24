@@ -49,6 +49,8 @@ export interface UploadedFile {
   filename: string;
   size: number;
   md5: string;
+  /** Kept so the printer's web server can serve it back, as the real one does. */
+  data: Buffer;
 }
 
 export interface FakePrinter {
@@ -83,6 +85,8 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   const fixture = options.fixture ?? MARS_5_ULTRA;
   const statusIntervalMs = options.statusIntervalMs ?? 1000;
   const msPerLayer = options.msPerLayer ?? 300;
+  /** Every print started, by taskId, for Cmd 320 / 321 and thumbnails. */
+  const tasks = new Map<string, string>();
   const knownFiles = new Set(options.files ?? ['cthulhu.goo', 'test.goo']);
   const state = new PrinterState(fixture);
   let videoEnabled = true;
@@ -142,6 +146,42 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
     // WebSocket as sdcp/error, and the file is discarded.
     // Reassembles by offset, because that is what the printer does and it is
     // why offset mismatch has its own error code.
+    // ---- The printer's own web server -----------------------------------
+    // The real Mars 5 Ultra serves its filesystem by path from this port:
+    // print files from /media/mmcblk0p3 (SDCP's /local), with Range support,
+    // and each task's thumbnail as a BMP. Only those two are imitated.
+    if (
+      url.pathname.startsWith('/media/mmcblk0p3/') &&
+      (req.method === 'GET' || req.method === 'HEAD')
+    ) {
+      const file = uploads.get(decodeURIComponent(url.pathname.slice('/media/mmcblk0p3/'.length)));
+      if (!file) {
+        res.writeHead(404).end('Not Found');
+        return;
+      }
+      const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ''));
+      const start = range ? Number(range[1]) : 0;
+      const end = range?.[2] ? Math.min(Number(range[2]), file.size - 1) : file.size - 1;
+      const body = file.data.subarray(start, end + 1);
+      res.writeHead(range ? 206 : 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Length': String(body.length),
+        ...(range ? { 'Content-Range': `bytes ${start}-${end}/${file.size}` } : {}),
+      });
+      res.end(req.method === 'HEAD' ? undefined : body);
+      return;
+    }
+    const thumb = /^\/media\/mmcblk0p1\/history_image\/([\w-]+)\.bmp$/.exec(url.pathname);
+    if (thumb && req.method === 'GET') {
+      if (!tasks.has(thumb[1] as string)) {
+        res.writeHead(404).end('Not Found');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(tinyBmp());
+      return;
+    }
+
     if (url.pathname === '/uploadFile/upload' && req.method === 'POST') {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
@@ -225,7 +265,12 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
             });
             return;
           }
-          uploads.set(filename, { filename, size: existing.received.length, md5: actual });
+          uploads.set(filename, {
+            filename,
+            size: existing.received.length,
+            md5: actual,
+            data: existing.received,
+          });
           knownFiles.add(filename);
         }
 
@@ -326,11 +371,13 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
 
           ws.send(JSON.stringify(ackFrame(requestId, cmd, ack)));
           if (ack === StartPrintAck.Ok) {
+            const taskId = randomUUID();
+            tasks.set(taskId, filename);
             state.startPrint({
               filename,
               totalLayer: 120,
               msPerLayer,
-              taskId: randomUUID(),
+              taskId,
             });
             broadcast(statusFrame());
           }
@@ -354,6 +401,46 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           ws.send(JSON.stringify(ackFrame(requestId, cmd, 0)));
           broadcast(statusFrame());
           return;
+
+        case Cmd.HistoryTaskList:
+          ws.send(
+            JSON.stringify({
+              ...ackFrame(requestId, cmd, 0),
+              Data: {
+                Cmd: cmd,
+                Data: { Ack: 0, HistoryData: [...tasks.keys()] },
+                RequestID: requestId,
+                MainboardID: mainboardId,
+              },
+            }),
+          );
+          return;
+
+        case Cmd.HistoryTaskDetail: {
+          // Shaped like the real printer's answer, trimmed to what matters:
+          // TaskName is the printer's own path, Thumbnail its own URL.
+          const ids = Array.isArray(payload.Id) ? (payload.Id as unknown[]).map(String) : [];
+          const list = ids
+            .filter((id) => tasks.has(id))
+            .map((id) => ({
+              TaskId: id,
+              TaskName: `/media/mmcblk0p3/${tasks.get(id)}`,
+              Thumbnail: `http://127.0.0.1:${wsPort}/media/mmcblk0p1/history_image/${id}.bmp`,
+              TaskStatus: 0,
+            }));
+          ws.send(
+            JSON.stringify({
+              ...ackFrame(requestId, cmd, 0),
+              Data: {
+                Cmd: cmd,
+                Data: { Ack: 0, HistoryDetailList: list },
+                RequestID: requestId,
+                MainboardID: mainboardId,
+              },
+            }),
+          );
+          return;
+        }
 
         case Cmd.ListFiles: {
           // Answers for the path asked, as the real printer does: /local has
@@ -464,4 +551,31 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
       if (udp) await new Promise<void>((resolve) => udp?.close(() => resolve()));
     },
   };
+}
+
+/** A 2x2 24-bit top-down BMP: red, green / blue, white. What a thumbnail looks like. */
+export function tinyBmp(): Buffer {
+  const width = 2;
+  const height = 2;
+  const stride = 8; // 6 bytes of pixels, padded to 4
+  const bmp = Buffer.alloc(54 + stride * height);
+  bmp.write('BM', 0, 'latin1');
+  bmp.writeUInt32LE(bmp.length, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(width, 18);
+  bmp.writeInt32LE(-height, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  const bgr = [
+    [0, 0, 255],
+    [0, 255, 0],
+    [255, 0, 0],
+    [255, 255, 255],
+  ];
+  bgr.forEach((px, i) => {
+    const at = 54 + Math.floor(i / width) * stride + (i % width) * 3;
+    bmp.set(px, at);
+  });
+  return bmp;
 }

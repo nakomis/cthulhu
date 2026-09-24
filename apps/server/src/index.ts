@@ -2,9 +2,10 @@ import { dirname, join } from 'node:path';
 import { CameraProxy, openRtspAsMjpeg } from '@cthulhu/camera';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
+import { FileMetaCache } from './file-meta.js';
 import { History } from './history.js';
 import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
-import { PreviewStore } from './previews.js';
+import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
 import { resolveVideoUrl } from './video-url.js';
@@ -112,6 +113,35 @@ async function main(): Promise<void> {
       })
     : undefined;
 
+  // Beside the database, on the same volume. Both are caches: not in the
+  // nightly backup (which copies only the SQLite file), and rebuilt from the
+  // printer when missing.
+  const dataDir = dirname(config.databasePath);
+  const fileMeta = new FileMetaCache({ dir: join(dataDir, 'file-meta'), port: config.uploadPort });
+  const printView = new PrintView({
+    dir: join(dataDir, 'print-files'),
+    port: config.uploadPort,
+    log: (line) => process.stdout.write(`${line}\n`),
+    detail: async (taskId) => {
+      const res = await printer.client?.historyTaskDetail([taskId]);
+      const data = (res?.Data ?? res) as
+        | { HistoryDetailList?: Record<string, unknown>[] }
+        | undefined;
+      const task = data?.HistoryDetailList?.[0];
+      if (!task || typeof task.TaskName !== 'string') return undefined;
+      return {
+        taskName: task.TaskName,
+        thumbnailUrl: typeof task.Thumbnail === 'string' ? task.Thumbnail : undefined,
+      };
+    },
+  });
+  // Fetch the print file as soon as a print starts, so the first layer image
+  // is not a 45-second wait.
+  store.on('printStarted', ({ taskId }) => {
+    const address = store.snapshot().address ?? config.printerIp;
+    if (taskId && address) void printView.prepare(address, taskId);
+  });
+
   const app = buildApp({
     config,
     store,
@@ -119,9 +149,8 @@ async function main(): Promise<void> {
     ...(config.webRoot ? { webRoot: config.webRoot } : {}),
     ...(history ? { history } : {}),
     ...(camera ? { camera } : {}),
-    // Beside the database, on the same volume. Not in the nightly backup,
-    // which copies only the SQLite file: a lost preview returns on re-upload.
-    previews: new PreviewStore(join(dirname(config.databasePath), 'previews')),
+    fileMeta,
+    printView,
     logger: true,
   });
 
