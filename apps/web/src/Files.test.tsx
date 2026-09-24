@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { Files } from './Files.js';
+import { Files, uploadEstimate } from './Files.js';
 
 const file = (name: string, storage: 'local' | 'usb' = 'local', folder = '') => ({
   path: storage === 'local' ? `/local/${name}` : `/usb/${folder ? `${folder}/` : ''}${name}`,
@@ -89,7 +89,7 @@ describe('Files', () => {
     await waitFor(() => expect(startPrint).toHaveBeenCalledWith('/usb/Printing Test/ROOK.goo'));
   });
 
-  it('says an upload is under way, and roughly how long it will take', async () => {
+  it('says an upload is under way', async () => {
     let finish: (v: unknown) => void = () => {};
     const uploadFile = vi.fn().mockReturnValue(new Promise((r) => (finish = r)));
     render(<Files listFiles={listFiles} uploadFile={uploadFile} />);
@@ -97,9 +97,7 @@ describe('Files', () => {
 
     const big = new File([new Uint8Array(13 * 1024 * 1024)], 'keystamp.goo');
     await userEvent.upload(screen.getByTestId('file-input'), big);
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Uploading keystamp.goo (about 2 min)…',
-    );
+    expect(await screen.findByRole('status')).toHaveTextContent('Uploading keystamp.goo…');
     finish({});
   });
 
@@ -120,5 +118,21 @@ describe('Files', () => {
     expect(img).toHaveAttribute('src', '/api/files/preview?path=%2Flocal%2Fkeystamp.goo');
     expect(await screen.findByText(/893 layers · about 1 h 28 m/)).toBeInTheDocument();
     expect(fileMeta).toHaveBeenCalledWith('/local/keystamp.goo');
+  });
+});
+
+describe('uploadEstimate', () => {
+  const mb = (n: number) => n * 1024 * 1024;
+
+  it('stays quiet for small files', () => {
+    expect(uploadEstimate(mb(13))).toBe('');
+  });
+
+  it('matches the real printer: a 216 MB file took under three minutes', () => {
+    expect(uploadEstimate(mb(216))).toBe(' (about 3 min)');
+  });
+
+  it('rounds middling uploads to a minute', () => {
+    expect(uploadEstimate(mb(60))).toBe(' (about a minute)');
   });
 });
