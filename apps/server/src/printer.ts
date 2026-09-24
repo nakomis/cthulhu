@@ -1,13 +1,13 @@
 import { discover, SdcpClient, type SocketLike } from '@cthulhu/sdcp';
 import type { Config } from './config.js';
-import type { History } from './history.js';
+import type { HistoryStore } from './history.js';
 import type { Notifier } from './notify.js';
 import type { PrinterStore } from './store.js';
 
 export interface PrinterServiceOptions {
   config: Config;
   store: PrinterStore;
-  history?: History;
+  history?: HistoryStore;
   notifier?: Notifier;
   /** Injected in tests so no real socket is opened. */
   socketFactory?: (url: string) => SocketLike;
@@ -26,7 +26,7 @@ export interface PrinterServiceOptions {
 export class PrinterService {
   private readonly config: Config;
   private readonly store: PrinterStore;
-  private readonly history: History | undefined;
+  private readonly history: HistoryStore | undefined;
   private readonly notifier: Notifier | undefined;
   private readonly socketFactory: ((url: string) => SocketLike) | undefined;
   private readonly discoverImpl: typeof discover;
@@ -119,11 +119,11 @@ export class PrinterService {
     });
 
     this.store.on('printStarted', ({ filename, taskId, totalLayer, startedAt }) => {
-      this.history?.startPrint(taskId, filename, totalLayer, startedAt);
+      void this.history?.startPrint(taskId, filename, totalLayer, startedAt);
     });
 
     this.store.on('printFinished', ({ filename, taskId }) => {
-      this.history?.finishPrint(taskId, 'complete');
+      void this.history?.finishPrint(taskId, 'complete');
       // notify() never throws and returns false on failure - which, unlogged,
       // means a broken notification path is indistinguishable from a working
       // one until somebody notices their phone never buzzes. Say something.

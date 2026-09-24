@@ -3,12 +3,13 @@ import { CameraProxy, openRtspAsMjpeg } from '@cthulhu/camera';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { FileMetaCache } from './file-meta.js';
-import { History } from './history.js';
+import { createHistoryStore, type HistoryStore } from './history.js';
 import { type Notifier, nullNotifier, PushoverNotifier } from './notify.js';
 import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
 import { cameraServiceOrigin, TimelapseRecorder } from './timelapse.js';
+import { TimelapseArchiver } from './timelapse-archive.js';
 import { VideoLease } from './video-lease.js';
 import { resolveVideoUrl } from './video-url.js';
 
@@ -26,9 +27,9 @@ async function main(): Promise<void> {
 
   const store = new PrinterStore();
 
-  let history: History | undefined;
+  let history: HistoryStore | undefined;
   try {
-    history = new History(config.databasePath);
+    history = await createHistoryStore(config);
   } catch (err) {
     // History is a nice-to-have; a missing volume must not stop the server
     // reporting live status, which is the primary job.
@@ -157,6 +158,24 @@ async function main(): Promise<void> {
     : undefined;
   if (timelapse) store.on('update', (view) => timelapse.update(view));
 
+  // Finished time-lapses moved off the camera service and onto the share -
+  // only once there is somewhere to put them AND a camera service to fetch
+  // them from. See CTHU-16.
+  const timelapseArchiver =
+    config.timelapseArchiveDir && timelapseBase
+      ? new TimelapseArchiver({
+          baseUrl: timelapseBase,
+          dir: config.timelapseArchiveDir,
+          ...(history ? { history } : {}),
+          log: (line) => process.stdout.write(`${line}\n`),
+        })
+      : undefined;
+  if (timelapseArchiver) {
+    timelapseArchiver.start();
+    // Promptly after a print finishes, rather than waiting up to 60s.
+    store.on('printFinished', () => void timelapseArchiver.tick());
+  }
+
   // Fetch the print file as soon as a print starts, so the first layer image
   // is not a 45-second wait.
   store.on('printStarted', ({ taskId }) => {
@@ -174,6 +193,7 @@ async function main(): Promise<void> {
     fileMeta,
     printView,
     ...(timelapseBase ? { timelapseBase } : {}),
+    ...(timelapseArchiver ? { timelapseArchiver } : {}),
     logger: true,
   });
 
@@ -186,8 +206,9 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     printer.stop();
+    timelapseArchiver?.stop();
     await camera?.close();
-    history?.close();
+    await history?.close();
     await app.close();
     process.exit(0);
   };

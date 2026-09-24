@@ -9,7 +9,7 @@ import { WebSocket } from 'ws';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { FileMetaCache } from './file-meta.js';
-import { History } from './history.js';
+import { SqliteHistory } from './history.js';
 import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
@@ -17,14 +17,14 @@ import { PrinterStore } from './store.js';
 let printer: FakePrinter;
 let service: PrinterService;
 let store: PrinterStore;
-let history: History;
+let history: SqliteHistory;
 let app: ReturnType<typeof buildApp>;
 let dir: string;
 
 beforeEach(async () => {
   printer = await createFakePrinter({ discovery: false, statusIntervalMs: 40, msPerLayer: 20 });
   dir = mkdtempSync(join(tmpdir(), 'cthulhu-'));
-  history = new History(join(dir, 'test.sqlite'));
+  history = new SqliteHistory(join(dir, 'test.sqlite'));
   store = new PrinterStore();
 
   const config = loadConfig({
@@ -75,7 +75,7 @@ beforeEach(async () => {
 afterEach(async () => {
   service.stop();
   await app.close();
-  history.close();
+  await history.close();
   await printer.close();
   rmSync(dir, { recursive: true, force: true });
 });

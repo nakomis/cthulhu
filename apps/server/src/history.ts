@@ -11,15 +11,38 @@ export interface PrintRecord {
 }
 
 /**
- * Print history.
+ * Print history, kept somewhere that survives a restart.
  *
- * Uses node:sqlite, which ships with Node, rather than better-sqlite3. That is
- * a deliberate change from the plan: better-sqlite3 is a native module and
- * Luke is an old N40L with NO AVX, so a prebuilt binary is a real risk and a
- * source build is a slow, fragile step in the image. node:sqlite avoids the
- * question entirely. See CTHU-9.
+ * Two implementations: SqliteHistory (below), the default and the only one
+ * that needs no server of its own, and PostgresHistory (postgres-history.ts),
+ * used once cthulhu's storage moves onto Luke's Postgres server and its
+ * database file can no longer sit on the same box as the process. Both keep
+ * the same semantics - see SqliteHistory's own comment for why they matter.
  */
-export class History {
+export interface HistoryStore {
+  startPrint(
+    taskId: string | undefined,
+    filename: string | undefined,
+    totalLayer?: number,
+    startedAt?: string,
+  ): Promise<void>;
+  finishPrint(taskId: string | undefined, outcome: 'complete' | 'stopped' | 'error'): Promise<void>;
+  list(limit?: number): Promise<PrintRecord[]>;
+  close(): Promise<void>;
+}
+
+/**
+ * Print history, using node:sqlite, which ships with Node, rather than
+ * better-sqlite3. That is a deliberate change from the plan: better-sqlite3
+ * is a native module and Luke is an old N40L with NO AVX, so a prebuilt
+ * binary is a real risk and a source build is a slow, fragile step in the
+ * image. node:sqlite avoids the question entirely. See CTHU-9.
+ *
+ * SQLite must never live on a network share (WAL and locking do not work over
+ * Samba/NFS), which is exactly why PostgresHistory exists for the deployment
+ * where storage moves onto Luke and the server does not: see CTHU-15.
+ */
+export class SqliteHistory implements HistoryStore {
   private readonly db: DatabaseSync;
   /**
    * node:sqlite throws ERR_INVALID_STATE on a closed handle, and status frames
@@ -46,25 +69,32 @@ export class History {
     `);
   }
 
+  // Synchronous under the hood (node:sqlite has no async API); wrapped in a
+  // resolved promise to satisfy HistoryStore, which PostgresHistory cannot
+  // implement synchronously.
   startPrint(
     taskId: string | undefined,
     filename: string | undefined,
     totalLayer?: number,
     startedAt: string = new Date().toISOString(),
-  ): void {
-    if (this.closed) return;
+  ): Promise<void> {
+    if (this.closed) return Promise.resolve();
     // A restart mid-print would otherwise create a duplicate row for the same
     // task, so an existing open row for this task wins.
-    if (taskId && this.openRowFor(taskId)) return;
+    if (taskId && this.openRowFor(taskId)) return Promise.resolve();
     this.db
       .prepare(
         'INSERT INTO prints (task_id, filename, started_at, outcome, total_layer) VALUES (?, ?, ?, ?, ?)',
       )
       .run(taskId ?? null, filename ?? null, startedAt, 'printing', totalLayer ?? null);
+    return Promise.resolve();
   }
 
-  finishPrint(taskId: string | undefined, outcome: 'complete' | 'stopped' | 'error'): void {
-    if (this.closed) return;
+  finishPrint(
+    taskId: string | undefined,
+    outcome: 'complete' | 'stopped' | 'error',
+  ): Promise<void> {
+    if (this.closed) return Promise.resolve();
     const now = new Date().toISOString();
     if (taskId) {
       this.db
@@ -72,13 +102,14 @@ export class History {
           'UPDATE prints SET finished_at = ?, outcome = ? WHERE task_id = ? AND finished_at IS NULL',
         )
         .run(now, outcome, taskId);
-      return;
+      return Promise.resolve();
     }
     this.db
       .prepare(
         'UPDATE prints SET finished_at = ?, outcome = ? WHERE id = (SELECT id FROM prints WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1)',
       )
       .run(now, outcome);
+    return Promise.resolve();
   }
 
   private openRowFor(taskId: string): boolean {
@@ -88,28 +119,52 @@ export class History {
     return row !== undefined;
   }
 
-  list(limit = 50): PrintRecord[] {
-    if (this.closed) return [];
+  list(limit = 50): Promise<PrintRecord[]> {
+    if (this.closed) return Promise.resolve([]);
     const rows = this.db
       .prepare(
         'SELECT id, task_id, filename, started_at, finished_at, outcome, total_layer FROM prints ORDER BY id DESC LIMIT ?',
       )
       .all(limit) as Record<string, unknown>[];
 
-    return rows.map((r) => ({
-      id: Number(r.id),
-      taskId: (r.task_id as string | null) ?? null,
-      filename: (r.filename as string | null) ?? null,
-      startedAt: (r.started_at as string | null) ?? null,
-      finishedAt: (r.finished_at as string | null) ?? null,
-      outcome: String(r.outcome),
-      totalLayer: r.total_layer === null ? null : Number(r.total_layer),
-    }));
+    return Promise.resolve(
+      rows.map((r) => ({
+        id: Number(r.id),
+        taskId: (r.task_id as string | null) ?? null,
+        filename: (r.filename as string | null) ?? null,
+        startedAt: (r.started_at as string | null) ?? null,
+        finishedAt: (r.finished_at as string | null) ?? null,
+        outcome: String(r.outcome),
+        totalLayer: r.total_layer === null ? null : Number(r.total_layer),
+      })),
+    );
   }
 
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.db.close();
+  close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      this.db.close();
+    }
+    return Promise.resolve();
   }
+}
+
+/**
+ * Picks the history store from configuration: Postgres when DATABASE_URL is
+ * set, SQLite (the development and small-deployment default) otherwise.
+ *
+ * `pg` is imported dynamically so a SQLite-only deployment never pays for
+ * loading it, and so a test importing this module without `pg` installed (as
+ * a peer scenario, not this workspace) still works.
+ */
+export async function createHistoryStore(config: {
+  databasePath: string;
+  databaseUrl?: string | undefined;
+}): Promise<HistoryStore> {
+  if (config.databaseUrl) {
+    const { Pool } = await import('pg');
+    const { PostgresHistory } = await import('./postgres-history.js');
+    return PostgresHistory.create(new Pool({ connectionString: config.databaseUrl }));
+  }
+  return new SqliteHistory(config.databasePath);
 }

@@ -1,4 +1,5 @@
-import type { CameraProxy } from '@cthulhu/camera';
+import { createReadStream, statSync } from 'node:fs';
+import { type CameraProxy, parseRange } from '@cthulhu/camera';
 import { StartPrintError, UploadError, UploadRejectedError, uploadFile } from '@cthulhu/sdcp';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
@@ -6,10 +7,11 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import { listPrintableFiles } from './file-list.js';
 import type { FileMetaCache } from './file-meta.js';
-import type { History } from './history.js';
+import type { HistoryStore } from './history.js';
 import type { PrintView } from './print-view.js';
 import type { PrinterService } from './printer.js';
 import type { PrinterStore } from './store.js';
+import type { TimelapseArchiver } from './timelapse-archive.js';
 import { registerWs } from './ws.js';
 
 export interface BuildAppOptions {
@@ -18,7 +20,7 @@ export interface BuildAppOptions {
   config: Config;
   store: PrinterStore;
   printer?: PrinterService;
-  history?: History;
+  history?: HistoryStore;
   camera?: CameraProxy;
   /** Previews and details of print files, read from the printer. */
   fileMeta?: FileMetaCache;
@@ -26,6 +28,8 @@ export interface BuildAppOptions {
   printView?: PrintView;
   /** The camera service, which records and keeps the time-lapses. */
   timelapseBase?: string;
+  /** Archived time-lapses on the share, once TIMELAPSE_ARCHIVE_DIR is set. */
+  timelapseArchiver?: TimelapseArchiver;
   logger?: boolean;
 }
 
@@ -39,6 +43,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     fileMeta,
     printView,
     timelapseBase,
+    timelapseArchiver,
     webRoot,
     logger = false,
   } = options;
@@ -69,7 +74,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!history) return { prints: [] };
     const query = request.query as { limit?: string };
     const limit = Math.min(500, Math.max(1, Number(query.limit ?? 50) || 50));
-    return { prints: history.list(limit) };
+    return { prints: await history.list(limit) };
   });
 
   app.get('/api/files', async (_request, reply) => {
@@ -120,7 +125,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const client = requireClient(reply);
     if (!client) return;
     await client.stop();
-    history?.finishPrint(store.snapshot().print.taskId, 'stopped');
+    await history?.finishPrint(store.snapshot().print.taskId, 'stopped');
     return { ok: true };
   });
 
@@ -212,24 +217,71 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return reply.code(502).send({ error: result.error });
   });
 
-  // ---- Time-lapses: made and kept by the camera service -----------------
+  // ---- Time-lapses: made by the camera service, archived to the share ---
+  //
+  // Without TIMELAPSE_ARCHIVE_DIR, everything comes live from the camera
+  // service - today's behaviour. With it, a `ready` time-lapse eventually
+  // moves to the archive (TimelapseArchiver, on a 60 s tick and promptly
+  // after a print finishes) and then appears from there instead; anything
+  // still recording, assembling, failed, or ready but not yet archived still
+  // comes from the camera service.
   app.get('/api/timelapses', async (_request, reply) => {
-    if (!timelapseBase) return [];
+    // Archived entries are always `ready` - they would not be archived
+    // otherwise - and the web app keys its download/play controls off that.
+    const archived = (timelapseArchiver?.list() ?? []).map((t) => ({
+      ...t,
+      state: 'ready' as const,
+    }));
+
+    if (!timelapseBase) return archived;
     const res = await fetch(`${timelapseBase}/timelapse`).catch(() => undefined);
-    if (!res?.ok) return reply.code(502).send({ error: 'The camera service did not answer' });
-    const list = (await res.json()) as { id: string }[];
+    if (!res?.ok) {
+      // The archive still stands even when the camera service is down -
+      // that is rather the point of archiving it.
+      if (archived.length > 0) return archived;
+      return reply.code(502).send({ error: 'The camera service did not answer' });
+    }
+    const remote = (await res.json()) as { id: string; state?: string; startedAt: string }[];
     // Named after the file printed, from cthulhu's own history.
-    const names = new Map((history?.list(500) ?? []).map((p) => [p.taskId, p.filename]));
-    return list.map((t) => ({ ...t, filename: names.get(t.id) ?? null }));
+    const names = new Map(
+      (history ? await history.list(500) : []).map((p) => [p.taskId, p.filename]),
+    );
+
+    const archivedIds = new Set(archived.map((t) => t.id));
+    const live = remote
+      .filter((t) => !archivedIds.has(t.id))
+      .map((t) => ({ ...t, filename: names.get(t.id) ?? null }));
+
+    return [...archived, ...live].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   });
 
   app.get<{ Params: { id: string } }>('/api/timelapses/:id.mp4', async (request, reply) => {
-    if (!timelapseBase || !/^[A-Za-z0-9-]{1,64}$/.test(request.params.id)) {
+    const id = request.params.id;
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) {
       return reply.code(404).send({ error: 'No such time-lapse' });
     }
+
+    const archivedPath = timelapseArchiver?.videoPath(id);
+    if (archivedPath) {
+      const size = statSync(archivedPath).size;
+      const result = parseRange(request.headers.range, size);
+      if (result === 'invalid') {
+        return reply.code(416).header('Content-Range', `bytes */${size}`).send();
+      }
+      const { start, end, partial } = result;
+      reply
+        .code(partial ? 206 : 200)
+        .header('Content-Type', 'video/mp4')
+        .header('Accept-Ranges', 'bytes')
+        .header('Content-Length', String(end - start + 1));
+      if (partial) reply.header('Content-Range', `bytes ${start}-${end}/${size}`);
+      return reply.send(createReadStream(archivedPath, { start, end }));
+    }
+
+    if (!timelapseBase) return reply.code(404).send({ error: 'No such time-lapse' });
     // Range passed through, so the player can seek.
     const range = request.headers.range;
-    const res = await fetch(`${timelapseBase}/timelapse/${request.params.id}.mp4`, {
+    const res = await fetch(`${timelapseBase}/timelapse/${id}.mp4`, {
       headers: range ? { Range: range } : {},
     }).catch(() => undefined);
     if (!res?.body || (!res.ok && res.status !== 206)) {
