@@ -30,13 +30,16 @@ function fakeCameraService(options: {
   video?: Record<string, string>;
   onDelete?: (id: string) => void;
   downloadFails?: Set<string>;
+  deleteFails?: Set<string>;
 }) {
   const deleted: string[] = [];
   const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? 'GET';
     if (u.endsWith('/timelapse') && method === 'GET') {
-      return new Response(JSON.stringify(options.list), { status: 200 });
+      // Like the real service: once deleted, a time-lapse is no longer listed.
+      const listed = options.list.filter((t) => !deleted.includes(t.id));
+      return new Response(JSON.stringify(listed), { status: 200 });
     }
     const mp4 = /\/timelapse\/([^/]+)\.mp4$/.exec(u);
     if (mp4 && method === 'GET') {
@@ -47,6 +50,7 @@ function fakeCameraService(options: {
     const del = /\/timelapse\/([^/.]+)$/.exec(u);
     if (del && method === 'DELETE') {
       const id = del[1] as string;
+      if (options.deleteFails?.has(id)) return new Response('', { status: 500 });
       deleted.push(id);
       options.onDelete?.(id);
       return new Response('{}', { status: 200 });
@@ -144,5 +148,49 @@ describe('TimelapseArchiver', () => {
     const archiver = new TimelapseArchiver({ baseUrl: 'http://phi:9121', dir, fetchImpl });
     await archiver.tick();
     expect(archiver.info('t1')?.filename).toBeNull();
+  });
+
+  it('keeps the only copy when the download comes up short', async () => {
+    // A connection dropped mid-body can end "cleanly": the size is the check.
+    const { fetchImpl, deleted } = fakeCameraService({
+      list: [
+        { id: 't1', state: 'ready', frames: 10, startedAt: '2026-09-24T09:00:00.000Z', bytes: 999 },
+      ],
+      video: { t1: 'TOO-SHORT' },
+    });
+    const archiver = new TimelapseArchiver({ baseUrl: 'http://phi:9121', dir, fetchImpl });
+    await archiver.tick();
+    expect(deleted).toEqual([]);
+    expect(archiver.isArchived('t1')).toBe(false);
+  });
+
+  it('retries a delete that failed, on the next pass', async () => {
+    const deleteFails = new Set(['t1']);
+    const { fetchImpl, deleted } = fakeCameraService({
+      list: [
+        { id: 't1', state: 'ready', frames: 10, startedAt: '2026-09-24T09:00:00.000Z', bytes: 9 },
+      ],
+      deleteFails,
+    });
+    const archiver = new TimelapseArchiver({ baseUrl: 'http://phi:9121', dir, fetchImpl });
+    await archiver.tick();
+    expect(archiver.isArchived('t1')).toBe(true);
+    expect(deleted).toEqual([]);
+
+    deleteFails.clear();
+    await archiver.tick();
+    expect(deleted).toEqual(['t1']);
+  });
+
+  it('runs one pass at a time, however many ask', async () => {
+    const { fetchImpl } = fakeCameraService({
+      list: [
+        { id: 't1', state: 'ready', frames: 10, startedAt: '2026-09-24T09:00:00.000Z', bytes: 9 },
+      ],
+    });
+    const archiver = new TimelapseArchiver({ baseUrl: 'http://phi:9121', dir, fetchImpl });
+    await Promise.all([archiver.tick(), archiver.tick(), archiver.tick()]);
+    const downloads = fetchImpl.mock.calls.filter(([u]) => String(u).endsWith('.mp4'));
+    expect(downloads).toHaveLength(1);
   });
 });

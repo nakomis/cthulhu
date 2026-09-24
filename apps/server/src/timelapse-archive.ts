@@ -67,6 +67,8 @@ export class TimelapseArchiver {
   private readonly options: TimelapseArchiverOptions;
   private readonly fetchImpl: typeof fetch;
   private timer: ReturnType<typeof setInterval> | undefined;
+  /** A tick in progress: the timer and "a print just finished" can both ask. */
+  private running: Promise<void> | undefined;
 
   constructor(options: TimelapseArchiverOptions) {
     this.options = options;
@@ -87,7 +89,20 @@ export class TimelapseArchiver {
   }
 
   /** One pass: archive every ready, not-yet-archived time-lapse. Never throws. */
-  async tick(): Promise<void> {
+  /**
+   * One pass. Overlapping calls share the pass already running: two passes
+   * archiving the same video would both write the same .part file.
+   */
+  tick(): Promise<void> {
+    if (!this.running) {
+      this.running = this.pass().finally(() => {
+        this.running = undefined;
+      });
+    }
+    return this.running;
+  }
+
+  private async pass(): Promise<void> {
     let remote: RemoteTimelapse[];
     try {
       const res = await this.fetchImpl(`${this.options.baseUrl}/timelapse`);
@@ -99,11 +114,29 @@ export class TimelapseArchiver {
     }
 
     for (const t of remote) {
-      if (t.state !== 'ready' || this.isArchived(t.id)) continue;
-      await this.archiveOne(t).catch((err: unknown) => {
+      if (t.state !== 'ready') continue;
+      try {
+        if (!this.isArchived(t.id)) await this.archiveOne(t);
+        // Archived and verified, but the camera service still has it: an
+        // earlier delete failed. Retry it on every pass until it goes.
+        if (this.archivedIntact(t)) await this.deleteRemote(t.id);
+      } catch (err) {
         this.options.log?.(`time-lapse archive: ${t.id}: ${String(err)}`);
-      });
+      }
     }
+  }
+
+  /** On disk here, complete, and the same size as the camera service's copy. */
+  private archivedIntact(t: RemoteTimelapse): boolean {
+    if (!this.isArchived(t.id)) return false;
+    return t.bytes === undefined || statSync(this.videoFile(t.id)).size === t.bytes;
+  }
+
+  private async deleteRemote(id: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.options.baseUrl}/timelapse/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok && res.status !== 404) throw new Error(`delete answered ${res.status}; will retry`);
   }
 
   isArchived(id: string): boolean {
@@ -120,6 +153,13 @@ export class TimelapseArchiver {
       Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
       createWriteStream(part),
     );
+    // Never trust a download that merely ended: a connection dropped mid-body
+    // can still look like a clean end. The camera service knows the size.
+    const got = statSync(part).size;
+    if (t.bytes !== undefined && got !== t.bytes) {
+      rmSync(part, { force: true });
+      throw new Error(`download incomplete: ${got} of ${t.bytes} bytes; will retry`);
+    }
     renameSync(part, this.videoFile(t.id));
 
     const filename = this.options.history
@@ -136,19 +176,8 @@ export class TimelapseArchiver {
     writeFileSync(this.metaFile(t.id), JSON.stringify(meta));
     this.options.log?.(`time-lapse archive: ${t.id} archived (${meta.bytes} bytes)`);
 
-    // Only now - the archive is safely on disk, so the camera service's copy
-    // is no longer the only one. A failure here just means a lingering copy
-    // there, cleaned up on the next tick... though the id is by then already
-    // "archived" here, so nothing retries the delete on its own. Log it
-    // instead: a stray file on the camera service's disk is a much smaller
-    // problem than a lost time-lapse.
-    await this.fetchImpl(`${this.options.baseUrl}/timelapse/${t.id}`, { method: 'DELETE' }).catch(
-      (err: unknown) => {
-        this.options.log?.(
-          `time-lapse archive: archived ${t.id} but could not delete the camera service's copy: ${String(err)}`,
-        );
-      },
-    );
+    // The camera service's copy is deleted by the caller, and only once the
+    // archive has been checked against it (archivedIntact).
   }
 
   /** Archived time-lapses, newest first. */
