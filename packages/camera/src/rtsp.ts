@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { UpstreamHandle } from './camera.js';
+import type { UpstreamHandle } from './proxy.js';
 
 /**
  * Turn the printer's RTSP stream into MJPEG a browser can render.
@@ -21,17 +21,37 @@ export interface RtspOptions {
   quality?: number;
   /** Scale the long edge down; the dashboard shows it a few hundred px wide. */
   width?: number;
-  fps?: number;
+  /**
+   * A CEILING, never a target: faster sources are thinned, slower ones are
+   * passed through frame for frame. The Mars 5 Ultra sends 2.7 fps.
+   */
+  maxFps?: number;
+  /**
+   * UDP receive buffer. The default lets a keyframe burst overflow it: on the
+   * real printer, 8 MB cut decoder errors from 108 to 18 in ten seconds.
+   */
+  bufferBytes?: number;
+  /** The ffmpeg binary; launchd, for one, runs without Homebrew on PATH. */
+  ffmpegPath?: string;
   /** Injected in tests. */
   spawnImpl?: typeof spawn;
   onLog?: (line: string) => void;
 }
 
 export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
-  const { url, quality = 6, width = 800, fps = 10, spawnImpl = spawn, onLog } = options;
+  const {
+    url,
+    quality = 6,
+    width = 800,
+    maxFps = 10,
+    bufferBytes = 8 * 1024 * 1024,
+    ffmpegPath = 'ffmpeg',
+    spawnImpl = spawn,
+    onLog,
+  } = options;
 
   const child = spawnImpl(
-    'ffmpeg',
+    ffmpegPath,
     [
       '-loglevel',
       'error',
@@ -40,14 +60,32 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
       // ffmpeg gives up. mediamtx and most other servers speak both.
       '-rtsp_transport',
       'udp+tcp',
+      '-buffer_size',
+      String(bufferBytes),
+      // The Mars 5 Ultra's RTP timestamps run about 11x fast: frames arrive
+      // every ~33 ms stamped 367 ms apart (it advertises 30/11 fps). Anything
+      // timed by them is wrong - the old fps=10 filter duplicated every frame
+      // ~3.7 times - so stamp each frame by when it actually arrived.
+      '-use_wallclock_as_timestamps',
+      '1',
       '-i',
       url,
       '-f',
       'mpjpeg',
       '-q:v',
       String(quality),
+      // NOT fps=N. That filter pads to a constant rate, and with UDP
+      // timestamps jumping about it emitted ~2.7 duplicate JPEGs per real
+      // frame, in bursts - pinning both of Luke's cores and showing the
+      // browser freeze, burst, freeze. select= only ever DROPS frames, and
+      // -fps_mode vfr stops the muxer inventing new ones.
       '-vf',
-      `fps=${fps},scale=${width}:-2`,
+      // 90% of the interval: frames jitter, so waiting the full interval and
+      // then for the NEXT frame lands well short of the cap (10 gave 7). The
+      // comma inside gte() is escaped: unescaped, it would end the filter.
+      `select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,${(0.9 / maxFps).toFixed(3)}),scale=${width}:-2`,
+      '-fps_mode',
+      'vfr',
       '-boundary_tag',
       'frame',
       'pipe:1',
@@ -63,7 +101,12 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
     (child.stdout as Readable | null)?.destroy(err);
   });
 
+  // Once asked to stop, ffmpeg's complaints are about being stopped - six
+  // lines of "Broken pipe" as it tries to finish writing to a closed pipe.
+  let stopping = false;
+
   child.stderr?.on('data', (d: Buffer) => {
+    if (stopping) return;
     for (const raw of d.toString().split('\n')) {
       const line = raw.trim();
       if (line && !isDecoderNoise(line)) onLog?.(`ffmpeg: ${line}`);
@@ -73,6 +116,7 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
   return {
     stream: child.stdout as Readable,
     abort: () => {
+      stopping = true;
       if (child.exitCode != null || child.signalCode != null) return;
       // SIGTERM first: ffmpeg catches it and sends RTSP TEARDOWN, so the
       // printer stops sending UDP packets at once rather than when its

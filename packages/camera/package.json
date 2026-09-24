@@ -1,33 +1,29 @@
 {
-  "name": "@cthulhu/server",
+  "name": "@cthulhu/camera",
   "version": "0.0.0",
   "private": true,
-  "description": "Cthulhu print server: REST + WebSocket + camera proxy",
+  "description": "Camera plumbing: one upstream shared between viewers, and RTSP to MJPEG via ffmpeg",
   "license": "CC0-1.0",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start": "node dist/index.js",
-    "dev": "node --watch src/index.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
-  },
-  "dependencies": {
-    "@cthulhu/camera": "workspace:*",
-    "@cthulhu/sdcp": "workspace:*",
-    "@fastify/static": "^10.1.4",
-    "@fastify/websocket": "^11.3.1",
-    "fastify": "^5.12.5"
   },
   "devDependencies": {
     "@cthulhu/fake-printer": "workspace:*",
     "@types/node": "^26.6.2",
-    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^5.0.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.1",
-    "ws": "^8.21.3"
+    "vitest": "^5.0.1"
   }
 }

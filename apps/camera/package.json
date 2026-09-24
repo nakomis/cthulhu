@@ -1,8 +1,8 @@
 {
-  "name": "@cthulhu/server",
+  "name": "@cthulhu/camera-service",
   "version": "0.0.0",
   "private": true,
-  "description": "Cthulhu print server: REST + WebSocket + camera proxy",
+  "description": "Turns the printer's RTSP camera into MJPEG over HTTP, off the box that runs cthulhu",
   "license": "CC0-1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -10,24 +10,16 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
-    "dev": "node --watch src/index.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@cthulhu/camera": "workspace:*",
-    "@cthulhu/sdcp": "workspace:*",
-    "@fastify/static": "^10.1.4",
-    "@fastify/websocket": "^11.3.1",
-    "fastify": "^5.12.5"
+    "@cthulhu/camera": "workspace:*"
   },
   "devDependencies": {
-    "@cthulhu/fake-printer": "workspace:*",
     "@types/node": "^26.6.2",
-    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^5.0.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.1",
-    "ws": "^8.21.3"
+    "vitest": "^5.0.1"
   }
 }
