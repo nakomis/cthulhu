@@ -131,9 +131,13 @@ export function Files({
   );
 }
 
-/** " (about 2 min)" for a 13 MB file, from what the real printer managed. */
+/**
+ * " (about 3 min)" for a 216 MB file, from what the real printer managed
+ * (about 1.3 MB/s). An earlier 11 s/MB guess came from one slow upload and
+ * promised 38 minutes for a transfer that took under three.
+ */
 export function uploadEstimate(bytes: number): string {
-  const seconds = Math.round((bytes / (1024 * 1024)) * 11);
+  const seconds = Math.round((bytes / (1024 * 1024)) * 0.8);
   if (seconds < 20) return '';
   return seconds < 90 ? ' (about a minute)' : ` (about ${Math.round(seconds / 60)} min)`;
 }
