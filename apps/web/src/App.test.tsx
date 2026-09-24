@@ -143,6 +143,17 @@ describe('dashboard', () => {
     );
   });
 
+  it("shows the printer's total time between Done and Remaining", async () => {
+    // keystamp's real TotalTicks: the touchscreen said 2 h 14 m.
+    render(<App fetchStatus={async () => view({ totalMs: 8_093_248 })} pollMs={100_000} />);
+    const total = await screen.findByText('Total time');
+    expect(total.nextElementSibling).toHaveTextContent('2h 15m');
+    const labels = [...(total.closest('dl')?.querySelectorAll('dt') ?? [])].map(
+      (d) => d.textContent,
+    );
+    expect(labels).toEqual(['Layer', 'Done', 'Total time', 'Remaining']);
+  });
+
   it('puts the camera straight after Status, above Progress and FEP Life', async () => {
     // Camera above the fold on a laptop; FEP Life, rarely needed, lower down.
     render(<App fetchStatus={async () => view()} pollMs={100_000} />);

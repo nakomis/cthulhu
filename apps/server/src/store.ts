@@ -22,6 +22,8 @@ export interface PrinterView {
     totalLayer: number | undefined;
     progressPercent: number | undefined;
     remainingMs: number | undefined;
+    /** The printer's own estimate of the whole print (TotalTicks), in ms. */
+    totalMs: number | undefined;
     errorNumber: number | undefined;
     /** What the error number actually means, or null when there is none. */
     errorMessage: string | null;
@@ -121,6 +123,7 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       totalLayer: undefined,
       progressPercent: undefined,
       remainingMs: undefined,
+      totalMs: undefined,
       errorNumber: undefined,
       errorMessage: null,
       taskId: undefined,
@@ -159,6 +162,8 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       totalLayer: info.totalLayer,
       progressPercent: progressPercent(info),
       remainingMs: remainingMs(info),
+      // Only a real estimate: the printer sends 0 until the file is loaded.
+      totalMs: info.totalTicks && info.totalTicks > 0 ? info.totalTicks : undefined,
       errorNumber: info.errorNumber,
       errorMessage: printErrorMessage(info.errorNumber) ?? null,
       taskId: info.taskId,
