@@ -1,5 +1,5 @@
 import { createReadStream, statSync } from 'node:fs';
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { PassThrough } from 'node:stream';
 import { CameraProxy, LatestFrame, parseRange, type UpstreamHandle } from '@cthulhu/camera';
 import { isTimelapseId, type TimelapseStore } from './timelapse.js';
@@ -56,7 +56,7 @@ export function createCameraService(options: CameraServiceOptions): {
     holds.delete(id);
   };
 
-  const server = createServer(async (req, res) => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
 
     if (path === '/health') {
@@ -163,6 +163,17 @@ export function createCameraService(options: CameraServiceOptions): {
     }
 
     res.writeHead(404).end();
+  };
+
+  // A throw in one request must not take the service down: an EACCES writing
+  // a time-lapse frame once crash-looped it, reopening the printer's RTSP on
+  // every restart until the printer stopped serving video (CTHU-22).
+  const server = createServer((req, res) => {
+    handleRequest(req, res).catch((err) => {
+      log(`${req.method} ${req.url} failed: ${String(err)}`);
+      if (res.headersSent) res.destroy();
+      else json(res, 500, { error: String(err) });
+    });
   });
 
   server.on('close', () => {
