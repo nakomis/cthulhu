@@ -1,4 +1,4 @@
-import { StartPrintError, UploadError, uploadFile } from '@cthulhu/sdcp';
+import { StartPrintError, UploadError, UploadRejectedError, uploadFile } from '@cthulhu/sdcp';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -157,6 +157,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const address = store.snapshot().address ?? config.printerIp;
     if (!address) return reply.code(503).send({ error: 'No printer address' });
 
+    // Needed to hear the verdict: the printer accepts every packet over HTTP
+    // and reports a rejected file only on the WebSocket.
+    const client = printer?.client;
+    if (!client) return reply.code(503).send({ error: 'Not connected to the printer' });
+
     try {
       const result = await uploadFile({
         address,
@@ -164,9 +169,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         data: body,
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
-      return result;
+      const path = await client.confirmUploaded(filename);
+      return { ...result, path };
     } catch (err) {
-      if (err instanceof UploadError) {
+      if (err instanceof UploadError || err instanceof UploadRejectedError) {
         return reply.code(502).send({ error: err.message });
       }
       throw err;

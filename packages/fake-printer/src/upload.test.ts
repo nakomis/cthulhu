@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import { md5Of, UPLOAD_CHUNK_BYTES, UploadError, uploadFile } from '@cthulhu/sdcp';
+import {
+  md5Of,
+  SdcpClient,
+  UPLOAD_CHUNK_BYTES,
+  UploadRejectedError,
+  uploadFile,
+} from '@cthulhu/sdcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFakePrinter, type FakePrinter } from './server.js';
 
@@ -89,22 +95,72 @@ describe('chunked upload, per the official SDCP spec', () => {
     ).rejects.toThrow(/offset does not match/);
   });
 
-  it('rejects a corrupted transfer via the MD5 the printer checks', async () => {
-    const data = new Uint8Array(2048).fill(1);
-    await expect(
-      uploadFile({
+  it('accepts every packet of a corrupted file, then rejects it on the WebSocket', async () => {
+    // What the real Mars 5 Ultra does: success:true to every packet, then
+    // sdcp/error ErrorCode 1 and the file deleted. An HTTP-only check calls
+    // this a successful upload.
+    const client = new SdcpClient({
+      address: '127.0.0.1',
+      port: printer.wsPort,
+      mainboardId: printer.mainboardId,
+    });
+    client.on('error', () => {});
+    await client.connect();
+    try {
+      const data = new Uint8Array(2048).fill(1);
+      await uploadFile({
         address: '127.0.0.1',
         port: printer.wsPort,
         filename: 'corrupt.goo',
         data,
         fetchImpl: async (url, init) => {
-          // Claim an MD5 that does not match what we actually send.
-          const headers = new Headers((init as RequestInit).headers);
-          headers.set('S-File-MD5', '0'.repeat(32));
-          return fetch(url as string, { ...(init as RequestInit), headers });
+          (init as { body: FormData }).body.set('S-File-MD5', '0'.repeat(32));
+          return fetch(url as string, init as RequestInit);
         },
-      }),
-    ).rejects.toBeInstanceOf(UploadError);
+      });
+
+      const verdict = client.confirmUploaded('corrupt.goo', { timeoutMs: 3000, intervalMs: 50 });
+      await expect(verdict).rejects.toBeInstanceOf(UploadRejectedError);
+      await expect(verdict).rejects.toMatchObject({ errorCode: 1 });
+      expect(printer.uploads.has('corrupt.goo')).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  it('discards a file whose MD5 came only as a header', async () => {
+    // The bug that met the real printer: the spec lists S-File-MD5 with the
+    // form fields, and a header of that name is ignored.
+    const data = new Uint8Array(2048).fill(3);
+    await uploadFile({
+      address: '127.0.0.1',
+      port: printer.wsPort,
+      filename: 'header-only.goo',
+      data,
+      fetchImpl: async (url, init) => {
+        (init as { body: FormData }).body.delete('S-File-MD5');
+        return fetch(url as string, init as RequestInit);
+      },
+    });
+    expect(printer.uploads.has('header-only.goo')).toBe(false);
+  });
+
+  it('confirms a good upload by finding it in /local', async () => {
+    const client = new SdcpClient({
+      address: '127.0.0.1',
+      port: printer.wsPort,
+      mainboardId: printer.mainboardId,
+    });
+    client.on('error', () => {});
+    await client.connect();
+    try {
+      await upload(new Uint8Array(4096).fill(9), 'good.goo');
+      await expect(client.confirmUploaded('good.goo', { timeoutMs: 3000 })).resolves.toBe(
+        '/local/good.goo',
+      );
+    } finally {
+      client.close();
+    }
   });
 
   it('makes an uploaded file printable', async () => {

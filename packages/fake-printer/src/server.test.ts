@@ -37,6 +37,21 @@ afterEach(async () => {
 const nextStatus = (c: SdcpClient) =>
   new Promise<ReturnType<typeof parseStatus>>((resolve) => c.once('status', resolve));
 
+/**
+ * The first status frame that satisfies `accept`. Not simply the next one:
+ * starting a print broadcasts a layer-0 frame, and under a loaded test run
+ * it can arrive after the listener is attached.
+ */
+const statusWhere = (c: SdcpClient, accept: (s: ReturnType<typeof parseStatus>) => boolean) =>
+  new Promise<ReturnType<typeof parseStatus>>((resolve) => {
+    const onStatus = (s: ReturnType<typeof parseStatus>) => {
+      if (!accept(s)) return;
+      c.off('status', onStatus);
+      resolve(s);
+    };
+    c.on('status', onStatus);
+  });
+
 describe('the fake printer, driven by the real client', () => {
   it('answers a status refresh', async () => {
     const statusPromise = nextStatus(client);
@@ -87,7 +102,7 @@ describe('starting a print', () => {
     await client.startPrint('cthulhu.goo');
     printer.tick(300); // 10 layers at 30ms each
 
-    const statusPromise = nextStatus(client);
+    const statusPromise = statusWhere(client, (s) => (s.printInfo.currentLayer ?? 0) > 0);
     await client.refreshStatus();
     const status = await statusPromise;
 
