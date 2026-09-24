@@ -143,6 +143,37 @@ describe('dashboard', () => {
     );
   });
 
+  it('puts the camera straight after Status, above Progress and FEP Life', async () => {
+    // Camera above the fold on a laptop; FEP Life, rarely needed, lower down.
+    render(<App fetchStatus={async () => view()} pollMs={100_000} />);
+    await screen.findByText('Status');
+    const headings = screen
+      .getAllByRole('heading', { level: 2 })
+      .map((h) => h.textContent?.trim().toLowerCase());
+    const at = (name: string) => headings.indexOf(name);
+    expect(at('status')).toBeLessThan(at('camera'));
+    expect(at('camera')).toBeLessThan(at('progress'));
+    expect(at('progress')).toBeLessThan(at('fep life'));
+  });
+
+  it('shows the layer being printed inside the Status box, beside the preview', async () => {
+    URL.createObjectURL = () => 'blob:layer';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(new Blob([new Uint8Array([137, 80])])));
+    render(
+      <App
+        fetchStatus={async () => view({ taskId: 't9', status: 3, currentLayer: 9, totalLayer: 20 })}
+        pollMs={100_000}
+      />,
+    );
+    const layer = await screen.findByRole('img', { name: 'Layer 10 of the print' });
+    const status = screen.getByText('Status').closest('section');
+    expect(status).toContainElement(layer);
+    expect(status).toContainElement(screen.getByRole('img', { name: 'Preview of the print' }));
+    fetchSpy.mockRestore();
+  });
+
   it('shows release film wear against its rated life', async () => {
     render(
       <App

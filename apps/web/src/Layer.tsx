@@ -77,31 +77,33 @@ export function Layer({ layer, totalLayer, fetchLayer = defaultFetch }: LayerPro
     [],
   );
 
+  // A compact figure for the Status box, beside the preview: the image,
+  // what it is, and while there is none yet, why.
   return (
-    <section className="rounded-lg border border-slate-700 p-4">
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-xs uppercase tracking-wider text-slate-400">Layer</h2>
-        {shown !== undefined ? (
-          // "printing", because Progress counts layers FINISHED: while it says
-          // 447, layer 448 is the one on the screen.
-          <span className="text-sm text-slate-400">
-            printing {shown + 1}
-            {totalLayer ? ` of ${totalLayer}` : ''}
-          </span>
-        ) : null}
-      </div>
+    <figure className="flex shrink-0 flex-col items-center">
       {src ? (
         <img
           src={src}
           alt={`Layer ${(shown ?? 0) + 1} of the print`}
-          className="mt-3 w-full rounded bg-black"
+          className="h-20 rounded bg-black sm:h-28"
         />
       ) : null}
       {note ? (
-        <p role="status" className="mt-3 text-sm text-slate-400">
+        <p
+          role="status"
+          className="flex h-20 w-40 items-center rounded bg-black p-2 text-center text-xs text-slate-400 sm:h-28 sm:w-56"
+        >
           {note}
         </p>
       ) : null}
-    </section>
+      {shown !== undefined ? (
+        // "printing", because Progress counts layers FINISHED: while it says
+        // 447, layer 448 is the one on the screen.
+        <figcaption className="mt-1 text-xs text-slate-400">
+          printing {shown + 1}
+          {totalLayer ? ` of ${totalLayer}` : ''}
+        </figcaption>
+      ) : null}
+    </figure>
   );
 }

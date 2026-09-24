@@ -95,7 +95,8 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
           </p>
         ) : null}
 
-        <section className="flex items-start justify-between gap-4 rounded-lg border border-slate-700 p-4">
+        {/* Wraps on a phone: the pictures drop below the words, not over them. */}
+        <section className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-slate-700 p-4">
           <div className="min-w-0">
             <h2 className="text-xs uppercase tracking-wider text-slate-400">Status</h2>
             <p className="mt-1 text-2xl">{print?.statusLabel ?? 'Unknown'}</p>
@@ -103,8 +104,22 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
               <p className="mt-1 truncate text-sm text-slate-400">{print.filename}</p>
             ) : null}
           </div>
-          {print?.taskId ? <Preview key={print.taskId} taskId={print.taskId} /> : null}
+          {print?.taskId ? (
+            <div className="flex items-start gap-2">
+              {active ? (
+                <Layer
+                  key={print.taskId}
+                  layer={print.currentLayer ?? 0}
+                  totalLayer={print.totalLayer}
+                />
+              ) : null}
+              <Preview key={print.taskId} taskId={print.taskId} />
+            </div>
+          ) : null}
         </section>
+
+        {/* Straight after Status, so it is above the fold on a laptop. */}
+        <Camera />
 
         <section className="rounded-lg border border-slate-700 p-4">
           <h2 className="text-xs uppercase tracking-wider text-slate-400">Progress</h2>
@@ -139,7 +154,7 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
         </section>
 
         <section className="rounded-lg border border-slate-700 p-4">
-          <h2 className="text-xs uppercase tracking-wider text-slate-400">Release film</h2>
+          <h2 className="text-xs uppercase tracking-wider text-slate-400">FEP Life</h2>
           <p className="mt-1 text-lg">{releaseFilmLabel(view?.releaseFilmState)}</p>
           {view?.releaseFilmUses !== undefined ? (
             <p className="mt-1 text-sm text-slate-400">
@@ -147,12 +162,6 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
             </p>
           ) : null}
         </section>
-
-        {print?.taskId && active ? (
-          <Layer key={print.taskId} layer={print.currentLayer ?? 0} totalLayer={print.totalLayer} />
-        ) : null}
-
-        <Camera />
 
         <Files busy={active} onChanged={() => void refresh()} />
 
@@ -201,7 +210,7 @@ function Preview({ taskId }: { taskId: string }) {
       src={`/api/print/thumbnail?task=${encodeURIComponent(taskId)}`}
       alt="Preview of the print"
       onError={() => setMissing(true)}
-      className="h-24 w-32 shrink-0 rounded bg-black object-contain sm:h-28 sm:w-36"
+      className="h-20 w-28 shrink-0 rounded bg-black object-contain sm:h-28 sm:w-36"
     />
   );
 }
