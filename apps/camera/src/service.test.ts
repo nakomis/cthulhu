@@ -31,7 +31,12 @@ async function start({ fail = false } = {}) {
   return { base, proxy, upstreams, aborted: () => aborted };
 }
 
-const frame = Buffer.from('--frame\r\nContent-type: image/jpeg\r\n\r\nJPEG\r\n');
+const frame = Buffer.concat([
+  Buffer.from('--frame\r\nContent-type: image/jpeg\r\n\r\n'),
+  Buffer.from([0xff, 0xd8]),
+  Buffer.from('JPEG'),
+  Buffer.from([0xff, 0xd9, 0x0d, 0x0a]),
+]);
 
 describe('camera service', () => {
   it('serves MJPEG from a single upstream to every viewer', async () => {
@@ -78,5 +83,58 @@ describe('camera service', () => {
     const svc = await start();
     const res = await fetch(`${svc.base}/health`);
     expect(await res.json()).toEqual({ status: 'ok', viewers: 0, upstreamOpen: false });
+  });
+});
+
+describe('time-lapse routes', () => {
+  it('holds the stream, saves the latest frame per layer, and assembles on finish', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { TimelapseStore } = await import('./timelapse.js');
+    const { createCameraService } = await import('./service.js');
+    const upstream = new PassThrough();
+    let opened = 0;
+    const store = new TimelapseStore({
+      dir: mkdtempSync(join(tmpdir(), 'tl-svc-')),
+      spawnImpl: (() => {
+        throw new Error('not in this test');
+      }) as never,
+    });
+    const { server, proxy } = createCameraService({
+      timelapse: store,
+      openUpstream: async () => {
+        opened += 1;
+        return { stream: upstream, abort: () => {} };
+      },
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    close = () =>
+      new Promise((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      });
+
+    await fetch(`${base}/timelapse/task-7/start`, { method: 'POST' });
+    expect(proxy.upstreamOpen).toBe(true);
+    expect(opened).toBe(1);
+
+    // No frame yet: refused, not saved as nothing.
+    expect((await fetch(`${base}/timelapse/task-7/frame?layer=0`, { method: 'POST' })).status).toBe(
+      409,
+    );
+
+    upstream.write(frame);
+    await new Promise((r) => setTimeout(r, 20));
+    const saved = await fetch(`${base}/timelapse/task-7/frame?layer=0`, { method: 'POST' });
+    expect(await saved.json()).toMatchObject({ state: 'recording', frames: 1 });
+
+    expect(
+      (await fetch(`${base}/timelapse/../../etc/frame?layer=0`, { method: 'POST' })).status,
+    ).not.toBe(200);
+    expect(
+      (await (await fetch(`${base}/timelapse`)).json()).map((t: { id: string }) => t.id),
+    ).toEqual(['task-7']);
   });
 });

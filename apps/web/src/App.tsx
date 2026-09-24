@@ -12,6 +12,7 @@ import {
   releaseFilmLabel,
   releaseFilmUsage,
 } from './status.js';
+import { Timelapses } from './Timelapses.js';
 import { useStatus } from './useStatus.js';
 
 export interface AppProps {
@@ -154,6 +155,8 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
         <Camera />
 
         <Files busy={active} onChanged={() => void refresh()} />
+
+        <Timelapses />
 
         <section className="flex gap-2">
           <button
