@@ -2,7 +2,15 @@ import { useState } from 'react';
 import { api, type PrinterView } from './api.js';
 import { Camera } from './Camera.js';
 import { Files } from './Files.js';
-import { formatEta, isActive, releaseFilmLabel } from './status.js';
+import {
+  canPause,
+  canResume,
+  canStop,
+  formatEta,
+  isActive,
+  releaseFilmLabel,
+  releaseFilmUsage,
+} from './status.js';
 import { useStatus } from './useStatus.js';
 
 export interface AppProps {
@@ -52,21 +60,27 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
 
   return (
     <main className="min-h-dvh bg-abyss text-slate-100 px-4 py-6">
-      <header className="mx-auto max-w-2xl">
-        <h1 className="text-2xl font-semibold tracking-tight text-tentacle">Cthulhu</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          {view?.attributes?.machineName ?? 'Elegoo Mars 5 Ultra'}
-          {view ? (
-            <span className={view.connected ? 'text-tentacle' : 'text-amber-400'}>
-              {view.connected ? ' · connected' : ' · disconnected'}
-            </span>
-          ) : null}
-          {view && !live ? (
-            <span className="text-slate-500" title="WebSocket unavailable; falling back to polling">
-              {' · polling'}
-            </span>
-          ) : null}
-        </p>
+      <header className="mx-auto flex max-w-2xl items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight text-tentacle">Cthulhu</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            {view?.attributes?.machineName ?? 'Elegoo Mars 5 Ultra'}
+            {view ? (
+              <span className={view.connected ? 'text-tentacle' : 'text-amber-400'}>
+                {view.connected ? ' · connected' : ' · disconnected'}
+              </span>
+            ) : null}
+            {view && !live ? (
+              <span
+                className="text-slate-500"
+                title="WebSocket unavailable; falling back to polling"
+              >
+                {' · polling'}
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <img src="/icon-192.png" alt="" className="size-14 shrink-0 rounded-xl" />
       </header>
 
       <div className="mx-auto mt-6 max-w-2xl space-y-4">
@@ -79,12 +93,15 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
           </p>
         ) : null}
 
-        <section className="rounded-lg border border-slate-700 p-4">
-          <h2 className="text-xs uppercase tracking-wider text-slate-400">Status</h2>
-          <p className="mt-1 text-2xl">{print?.statusLabel ?? 'Unknown'}</p>
-          {print?.filename ? (
-            <p className="mt-1 truncate text-sm text-slate-400">{print.filename}</p>
-          ) : null}
+        <section className="flex items-start justify-between gap-4 rounded-lg border border-slate-700 p-4">
+          <div className="min-w-0">
+            <h2 className="text-xs uppercase tracking-wider text-slate-400">Status</h2>
+            <p className="mt-1 text-2xl">{print?.statusLabel ?? 'Unknown'}</p>
+            {print?.filename ? (
+              <p className="mt-1 truncate text-sm text-slate-400">{print.filename}</p>
+            ) : null}
+          </div>
+          {print?.filename ? <Preview key={print.filename} filename={print.filename} /> : null}
         </section>
 
         <section className="rounded-lg border border-slate-700 p-4">
@@ -122,6 +139,11 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
         <section className="rounded-lg border border-slate-700 p-4">
           <h2 className="text-xs uppercase tracking-wider text-slate-400">Release film</h2>
           <p className="mt-1 text-lg">{releaseFilmLabel(view?.releaseFilmState)}</p>
+          {view?.releaseFilmUses !== undefined ? (
+            <p className="mt-1 text-sm text-slate-400">
+              {releaseFilmUsage(view.releaseFilmUses, view.releaseFilmMax)}
+            </p>
+          ) : null}
         </section>
 
         <Camera />
@@ -131,7 +153,7 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
         <section className="flex gap-2">
           <button
             type="button"
-            disabled={busy || !active}
+            disabled={busy || !canPause(print?.status)}
             onClick={() => void act(api.pause)}
             className="flex-1 rounded-lg border border-slate-600 px-4 py-3 disabled:opacity-40"
           >
@@ -139,7 +161,7 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
           </button>
           <button
             type="button"
-            disabled={busy || active}
+            disabled={busy || !canResume(print?.status)}
             onClick={() => void act(api.resume)}
             className="flex-1 rounded-lg border border-slate-600 px-4 py-3 disabled:opacity-40"
           >
@@ -147,7 +169,7 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
           </button>
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !canStop(print?.status)}
             onClick={confirmStop}
             className="flex-1 rounded-lg border border-red-500/50 px-4 py-3 text-red-300 disabled:opacity-40"
           >
@@ -156,5 +178,24 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
         </section>
       </div>
     </main>
+  );
+}
+
+/**
+ * The slicer's preview of the file being printed, when cthulhu has one - it
+ * can only take one from a file uploaded through it. Otherwise nothing: a
+ * broken-image icon would say something is wrong when nothing is.
+ */
+function Preview({ filename }: { filename: string }) {
+  const [missing, setMissing] = useState(false);
+  if (missing) return null;
+  const name = filename.split('/').pop() ?? filename;
+  return (
+    <img
+      src={`/api/preview/${encodeURIComponent(name)}`}
+      alt={`Slicer preview of ${name}`}
+      onError={() => setMissing(true)}
+      className="size-24 shrink-0 rounded bg-black object-contain sm:size-28"
+    />
   );
 }

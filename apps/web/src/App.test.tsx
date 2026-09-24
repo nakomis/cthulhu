@@ -100,12 +100,58 @@ describe('dashboard', () => {
     );
   });
 
-  it('disables Pause when nothing is printing', async () => {
+  it('disables every control when nothing is printing', async () => {
+    // Seen on the real printer: idle after a print, Resume was the one live
+    // button - inviting a press that could only fail.
     render(
       <App fetchStatus={async () => view({ status: 0, statusLabel: 'Idle' })} pollMs={100_000} />,
     );
     await screen.findByText('Idle');
     expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+  });
+
+  it('offers Resume and Stop, not Pause, when paused', async () => {
+    render(
+      <App fetchStatus={async () => view({ status: 6, statusLabel: 'Paused' })} pollMs={100_000} />,
+    );
+    await screen.findByText('Paused');
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+  });
+
+  it('shows the logo in the header', async () => {
+    const { container } = render(<App fetchStatus={async () => view()} pollMs={100_000} />);
+    await screen.findByText('Cthulhu');
+    expect(container.querySelector('header img')).toHaveAttribute('src', '/icon-192.png');
+  });
+
+  it("shows the slicer's preview of the file being printed", async () => {
+    render(<App fetchStatus={async () => view({ filename: 'keystamp.goo' })} pollMs={100_000} />);
+    const img = await screen.findByRole('img', { name: 'Slicer preview of keystamp.goo' });
+    expect(img).toHaveAttribute('src', '/api/preview/keystamp.goo');
+  });
+
+  it('shows nothing, not a broken image, when there is no preview', async () => {
+    // Files from the USB stick never passed through cthulhu, so have none.
+    render(<App fetchStatus={async () => view({ filename: 'ROOK.goo' })} pollMs={100_000} />);
+    const img = await screen.findByRole('img', { name: 'Slicer preview of ROOK.goo' });
+    img.dispatchEvent(new Event('error'));
+    await waitFor(() =>
+      expect(screen.queryByRole('img', { name: /Slicer preview/ })).not.toBeInTheDocument(),
+    );
+  });
+
+  it('shows release film wear against its rated life', async () => {
+    render(
+      <App
+        fetchStatus={async () => view({}, { releaseFilmUses: 1000, releaseFilmMax: 60000 })}
+        pollMs={100_000}
+      />,
+    );
+    expect(await screen.findByText('1,000 / 60,000 layers (2%)')).toBeInTheDocument();
+    expect(screen.getByText('Healthy')).toBeInTheDocument();
   });
 });

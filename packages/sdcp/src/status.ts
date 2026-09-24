@@ -45,7 +45,10 @@ export interface PrinterStatus {
   devicesStatus: DevicesStatus;
   /** Cumulative exposure time of the LCD, in seconds. A wear indicator. */
   printScreen: number | undefined;
-  /** Release film USE COUNT - distinct from devicesStatus.releaseFilmState. */
+  /**
+   * Release film USE COUNT, in layers - distinct from releaseFilmState.
+   * Counts up across prints: 0 to 1000 over a 1000-layer print.
+   */
   releaseFilmUses: number | undefined;
   tempOfUVLED: number | undefined;
   /** Enclosure temperature. There is no nozzle or hotbed on an SLA machine. */
@@ -79,6 +82,23 @@ function numArray(value: unknown): number[] {
   return single === undefined ? [] : [single];
 }
 
+/**
+ * The self-check block. The spec puts it in status; the Mars 5 Ultra
+ * (firmware V1.5.0) sends it only in ATTRIBUTES, and without XMotorStatus -
+ * it has a tilting vat, not an X axis.
+ */
+function parseDevicesStatus(devices: Record<string, unknown>): DevicesStatus {
+  return {
+    releaseFilmState: num(readMisspelled(devices, WIRE_TYPOS.releaseFilmState, 'ReleaseFilmState')),
+    lcdStatus: num(devices.LCDStatus),
+    tempSensorStatusOfUVLED: num(devices.TempSensorStatusOfUVLED),
+    sgStatus: num(devices.SgStatus),
+    zMotorStatus: num(devices.ZMotorStatus),
+    xMotorStatus: num(devices.XMotorStatus),
+    rotateMotorStatus: num(devices.RotateMotorStatus),
+  };
+}
+
 export function parseStatus(raw: unknown): PrinterStatus {
   const root = obj(raw);
   // Payloads arrive either bare or wrapped in { Status: {...} }.
@@ -106,17 +126,7 @@ export function parseStatus(raw: unknown): PrinterStatus {
       errorNumber: num(printInfo.ErrorNumber),
       taskId: str(printInfo.TaskId),
     },
-    devicesStatus: {
-      releaseFilmState: num(
-        readMisspelled(devices, WIRE_TYPOS.releaseFilmState, 'ReleaseFilmState'),
-      ),
-      lcdStatus: num(devices.LCDStatus),
-      tempSensorStatusOfUVLED: num(devices.TempSensorStatusOfUVLED),
-      sgStatus: num(devices.SgStatus),
-      zMotorStatus: num(devices.ZMotorStatus),
-      xMotorStatus: num(devices.XMotorStatus),
-      rotateMotorStatus: num(devices.RotateMotorStatus),
-    },
+    devicesStatus: parseDevicesStatus(devices),
     currentCoord: str(readMisspelled(status, WIRE_TYPOS.currentCoord, 'CurrentCoord')),
     raw: root,
   };
@@ -130,12 +140,28 @@ export interface PrinterAttributes {
   firmwareVersion: string | undefined;
   protocolVersion: string | undefined;
   resolution: string | undefined;
-  /** X/Y/Z build volume in mm. Mars 5 Ultra: 153.36 x 77.76 x 165. */
+  /**
+   * X/Y/Z build volume in mm, as the printer reports it. The Mars 5 Ultra
+   * says 218.88x128.88x220, although Elegoo publish 153.36 x 77.76 x 165.
+   */
   xyzSize: string | undefined;
-  /** HARD LIMIT, expected to be 1. The camera proxy design depends on it. */
+  /**
+   * 2 on the Mars 5 Ultra, not the 1 first assumed. The proxy still holds a
+   * single upstream, leaving a slot for the Elegoo app.
+   */
   maximumVideoStreamAllowed: number | undefined;
   maximumCloudSdcpServicesAllowed: number | undefined;
   numberOfVideoStreamConnected: number | undefined;
+  /** The self-check block; see parseDevicesStatus. */
+  devicesStatus: DevicesStatus;
+  /** 0 disconnected, 1 connected. In attributes, not status, on this printer. */
+  cameraStatus: number | undefined;
+  /** Recommended release film life, in layers. 60000 on the Mars 5 Ultra. */
+  releaseFilmMax: number | undefined;
+  /** 1 when a USB stick is inserted. */
+  usbDiskStatus: number | undefined;
+  /** Free internal storage, in bytes. */
+  remainingMemory: number | undefined;
   raw: Record<string, unknown>;
 }
 
@@ -156,6 +182,11 @@ export function parseAttributes(raw: unknown): PrinterAttributes {
       readMisspelled(a, WIRE_TYPOS.maximumCloudServices, 'MaximumCloudSDCPServicesAllowed'),
     ),
     numberOfVideoStreamConnected: num(a.NumberOfVideoStreamConnected),
+    devicesStatus: parseDevicesStatus(obj(a.DevicesStatus)),
+    cameraStatus: num(a.CameraStatus),
+    releaseFilmMax: num(a.ReleaseFilmMax),
+    usbDiskStatus: num(a.UsbDiskStatus),
+    remainingMemory: num(a.RemainingMemory),
     raw: root,
   };
 }

@@ -3,7 +3,13 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Files } from './Files.js';
 
-const listFiles = async () => [{ name: 'cthulhu.goo' }, { name: 'boots.ctb' }];
+const file = (name: string, storage: 'local' | 'usb' = 'local', folder = '') => ({
+  path: storage === 'local' ? `/local/${name}` : `/usb/${folder ? `${folder}/` : ''}${name}`,
+  name,
+  storage,
+  folder,
+});
+const listFiles = async () => [file('cthulhu.goo'), file('boots.ctb')];
 
 describe('Files', () => {
   it('lists the files on the printer', async () => {
@@ -18,8 +24,8 @@ describe('Files', () => {
     await screen.findByText('cthulhu.goo');
 
     await userEvent.click(screen.getAllByRole('button', { name: 'Print' })[0] as HTMLElement);
-    await waitFor(() => expect(startPrint).toHaveBeenCalledWith('cthulhu.goo'));
-    expect(await screen.findByRole('status')).toHaveTextContent('Started cthulhu.goo');
+    await waitFor(() => expect(startPrint).toHaveBeenCalledWith('/local/cthulhu.goo'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Started /local/cthulhu.goo');
   });
 
   it('disables Print while a print is already running', async () => {
@@ -44,12 +50,12 @@ describe('Files', () => {
 
   it('uploads a chosen file and refreshes the list', async () => {
     const uploadFile = vi.fn().mockResolvedValue({ filename: 'new.goo' });
-    const listed = vi.fn().mockResolvedValue([{ name: 'cthulhu.goo' }]);
+    const listed = vi.fn().mockResolvedValue([file('cthulhu.goo')]);
     render(<Files listFiles={listed} uploadFile={uploadFile} />);
     await screen.findByText('cthulhu.goo');
 
-    const file = new File([new Uint8Array([1, 2, 3])], 'new.goo');
-    await userEvent.upload(screen.getByTestId('file-input'), file);
+    const upload = new File([new Uint8Array([1, 2, 3])], 'new.goo');
+    await userEvent.upload(screen.getByTestId('file-input'), upload);
 
     await waitFor(() => expect(uploadFile).toHaveBeenCalled());
     expect(await screen.findByRole('status')).toHaveTextContent('Uploaded new.goo');
@@ -67,6 +73,34 @@ describe('Files', () => {
       new File([new Uint8Array([1])], 'bad.goo'),
     );
     expect(await screen.findByRole('status')).toHaveTextContent('md5 mismatch');
+  });
+
+  it('shows where a USB file lives, and prints it by its full path', async () => {
+    const startPrint = vi.fn().mockResolvedValue({ ok: true });
+    render(
+      <Files
+        listFiles={async () => [file('ROOK.goo', 'usb', 'Printing Test')]}
+        startPrint={startPrint}
+      />,
+    );
+    expect(await screen.findByText('USB stick · Printing Test')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Print' }));
+    await waitFor(() => expect(startPrint).toHaveBeenCalledWith('/usb/Printing Test/ROOK.goo'));
+  });
+
+  it('says an upload is under way, and roughly how long it will take', async () => {
+    let finish: (v: unknown) => void = () => {};
+    const uploadFile = vi.fn().mockReturnValue(new Promise((r) => (finish = r)));
+    render(<Files listFiles={listFiles} uploadFile={uploadFile} />);
+    await screen.findByText('cthulhu.goo');
+
+    const big = new File([new Uint8Array(13 * 1024 * 1024)], 'keystamp.goo');
+    await userEvent.upload(screen.getByTestId('file-input'), big);
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Uploading keystamp.goo (about 2 min)…',
+    );
+    finish({});
   });
 
   it('shows an empty state when the printer has no files', async () => {

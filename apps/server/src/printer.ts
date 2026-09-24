@@ -118,8 +118,8 @@ export class PrinterService {
       this.log(`printer error: ${err.message}`);
     });
 
-    this.store.on('printStarted', ({ filename, taskId, totalLayer }) => {
-      this.history?.startPrint(taskId, filename, totalLayer);
+    this.store.on('printStarted', ({ filename, taskId, totalLayer, startedAt }) => {
+      this.history?.startPrint(taskId, filename, totalLayer, startedAt);
     });
 
     this.store.on('printFinished', ({ filename, taskId }) => {

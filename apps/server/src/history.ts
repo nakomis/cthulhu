@@ -46,7 +46,12 @@ export class History {
     `);
   }
 
-  startPrint(taskId: string | undefined, filename: string | undefined, totalLayer?: number): void {
+  startPrint(
+    taskId: string | undefined,
+    filename: string | undefined,
+    totalLayer?: number,
+    startedAt: string = new Date().toISOString(),
+  ): void {
     if (this.closed) return;
     // A restart mid-print would otherwise create a duplicate row for the same
     // task, so an existing open row for this task wins.
@@ -55,13 +60,7 @@ export class History {
       .prepare(
         'INSERT INTO prints (task_id, filename, started_at, outcome, total_layer) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(
-        taskId ?? null,
-        filename ?? null,
-        new Date().toISOString(),
-        'printing',
-        totalLayer ?? null,
-      );
+      .run(taskId ?? null, filename ?? null, startedAt, 'printing', totalLayer ?? null);
   }
 
   finishPrint(taskId: string | undefined, outcome: 'complete' | 'stopped' | 'error'): void {

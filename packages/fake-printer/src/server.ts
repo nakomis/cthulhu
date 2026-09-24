@@ -8,7 +8,6 @@ import {
   DISCOVERY_PORT,
   HEARTBEAT_REQUEST,
   HEARTBEAT_RESPONSE,
-  MAX_VIDEO_STREAMS,
   StartPrintAck,
   topics,
 } from '@cthulhu/sdcp';
@@ -73,6 +72,13 @@ export interface FakePrinter {
  * from a fixture (see fixtures.ts) precisely so that a real capture can replace
  * hypothesised shapes without touching this file.
  */
+/**
+ * Deliberately STRICTER than the real printer, which allows 2 (and says so in
+ * the attributes this fake sends). One viewer here means the camera tests can
+ * only pass if the proxy really does share a single upstream between browsers.
+ */
+const FAKE_MAX_VIDEO_STREAMS = 1;
+
 export async function createFakePrinter(options: FakePrinterOptions = {}): Promise<FakePrinter> {
   const fixture = options.fixture ?? MARS_5_ULTRA;
   const statusIntervalMs = options.statusIntervalMs ?? 1000;
@@ -101,9 +107,7 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
         res.writeHead(503).end('video stream disabled');
         return;
       }
-      // MaximumVideoStreamAllowed is 1. Refuse a second viewer the way the
-      // real printer would, so the proxy's multiplexing is actually required.
-      if (videoConnections >= 1) {
+      if (videoConnections >= FAKE_MAX_VIDEO_STREAMS) {
         res.writeHead(503).end('maximum video streams reached');
         return;
       }
@@ -351,24 +355,35 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           broadcast(statusFrame());
           return;
 
-        case Cmd.ListFiles:
+        case Cmd.ListFiles: {
+          // Answers for the path asked, as the real printer does: /local has
+          // the files; this fake has no USB stick, so /usb is empty; anything
+          // else is Ack -1, which is what the Mars 5 Ultra said to /mnt.
+          const url = typeof payload.Url === 'string' ? payload.Url.replace(/\/+$/, '') : '/local';
+          const listing =
+            url === '/local' || url === ''
+              ? {
+                  Ack: 0,
+                  // Full paths, as the real printer lists them.
+                  FileList: [...knownFiles].map((name) => ({ name: `/local/${name}`, type: 1 })),
+                }
+              : url === '/usb'
+                ? { Ack: 0, FileList: [] }
+                : { Ack: -1 };
           ws.send(
             JSON.stringify({
               Id: randomUUID(),
               Topic: topics.response(mainboardId),
               Data: {
                 Cmd: cmd,
-                Data: {
-                  Ack: 0,
-                  // The real printer lists full paths: /local/keystamp.goo.
-                  FileList: [...knownFiles].map((name) => ({ name: `/local/${name}`, type: 1 })),
-                },
+                Data: listing,
                 RequestID: requestId,
                 MainboardID: mainboardId,
               },
             }),
           );
           return;
+        }
 
         case Cmd.SetVideoStream: {
           const enable = payload.Enable === 1 || payload.Enable === true;
@@ -377,7 +392,7 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           // The real printer returns an RTSP address; this fake serves MJPEG
           // over HTTP, so it returns that instead and the server consumes
           // whichever it is given.
-          if (enable && videoConnections >= MAX_VIDEO_STREAMS) {
+          if (enable && videoConnections >= FAKE_MAX_VIDEO_STREAMS) {
             ws.send(JSON.stringify(ackFrame(requestId, cmd, 1)));
             return;
           }

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { openRtspAsMjpeg } from './rtsp.js';
+import { isDecoderNoise, openRtspAsMjpeg } from './rtsp.js';
 
 /** A stand-in for a spawned ffmpeg, so no binary is needed. */
 function fakeSpawn() {
@@ -130,5 +130,27 @@ describe('openRtspAsMjpeg', () => {
 
     expect((await failed).message).toContain('ENOENT');
     expect(logs.join('\n')).toContain('ffmpeg failed to start');
+  });
+
+  it('drops expected decoder chatter but keeps real failures', () => {
+    // Lines seen from the real Mars 5 Ultra over WiFi, several a second.
+    for (const noise of [
+      '[h264 @ 0x7f8085f06180] non-existing PPS 0 referenced',
+      'Last message repeated 1 times',
+      '[h264 @ 0x592404b0e600] no frame!',
+      '[h264 @ 0x592404b0e600] decode_slice_header error',
+      '[rtsp @ 0x5ccf8e801d40] RTP: PT=60: bad cseq 19db expected=0a32',
+      '[rtsp @ 0x5ccf8e801d40]',
+      'cabac decode of qscale diff failed at 26 25',
+    ]) {
+      expect(isDecoderNoise(noise)).toBe(true);
+    }
+    for (const real of [
+      '[rtsp @ 0x7f] Nonmatching transport in server reply',
+      'rtsp://172.29.0.37:554/video: Connection refused',
+      'Error opening input files: Invalid data found when processing input',
+    ]) {
+      expect(isDecoderNoise(real)).toBe(false);
+    }
   });
 });

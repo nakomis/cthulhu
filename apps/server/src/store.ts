@@ -28,6 +28,8 @@ export interface PrinterView {
     taskId: string | undefined;
   };
   releaseFilmState: number | undefined;
+  /** Recommended release film life in layers, to set releaseFilmUses against. */
+  releaseFilmMax: number | undefined;
   /** Cumulative LCD exposure seconds - a consumable wear indicator. */
   printScreen: number | undefined;
   /** Release film use count, distinct from its health flag. */
@@ -57,8 +59,21 @@ function isTerminal(code: number | undefined): boolean {
   return code === PrintStatus.Complete || code === PrintStatus.Stopped || code === PrintStatus.Idle;
 }
 
-export function printStatusLabel(code: number | undefined): string {
+export function printStatusLabel(
+  code: number | undefined,
+  info?: Pick<PrintInfo, 'currentLayer' | 'totalLayer'>,
+): string {
   if (code === undefined) return 'Unknown';
+  // A print that ends normally passes through Stopping too - for about 25
+  // seconds after its last layer, on the real printer. Only call it Stopping
+  // when layers were left.
+  if (
+    code === PrintStatus.Stopping &&
+    info?.totalLayer &&
+    (info.currentLayer ?? 0) >= info.totalLayer
+  ) {
+    return 'Finishing';
+  }
   // Never invent a label. The docs are FDM; an SLA machine may send codes we
   // have not seen, and showing the number beats showing a confident lie.
   return PRINT_STATUS_LABELS[code] ?? `Unknown (${code})`;
@@ -73,7 +88,13 @@ export interface StoreEvents {
    * and so the row carries the real taskId rather than an empty string.
    */
   printStarted: [
-    { filename: string | undefined; taskId: string | undefined; totalLayer: number | undefined },
+    {
+      filename: string | undefined;
+      taskId: string | undefined;
+      totalLayer: number | undefined;
+      /** When the print began: now, less the printer's elapsed ticks. */
+      startedAt: string;
+    },
   ];
   /** Emitted once per print completion, for notifications and history. */
   printFinished: [{ filename: string | undefined; taskId: string | undefined }];
@@ -105,6 +126,7 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       taskId: undefined,
     },
     releaseFilmState: undefined,
+    releaseFilmMax: undefined,
     printScreen: undefined,
     releaseFilmUses: undefined,
     cameraStatus: undefined,
@@ -131,7 +153,7 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
     this.view.machineStatus = status.machineStatus;
     this.view.print = {
       status: info.status,
-      statusLabel: printStatusLabel(info.status),
+      statusLabel: printStatusLabel(info.status, info),
       filename: info.filename,
       currentLayer: info.currentLayer,
       totalLayer: info.totalLayer,
@@ -141,10 +163,14 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       errorMessage: printErrorMessage(info.errorNumber) ?? null,
       taskId: info.taskId,
     };
-    this.view.releaseFilmState = status.devicesStatus.releaseFilmState;
+    // The spec puts these in status; the Mars 5 Ultra sends them only in
+    // attributes. Take whichever arrives, and never let an absent field
+    // overwrite a value the other frame supplied.
+    this.view.releaseFilmState =
+      status.devicesStatus.releaseFilmState ?? this.view.releaseFilmState;
     this.view.printScreen = status.printScreen;
     this.view.releaseFilmUses = status.releaseFilmUses;
-    this.view.cameraStatus = status.cameraStatus;
+    this.view.cameraStatus = status.cameraStatus ?? this.view.cameraStatus;
 
     const previous = this.lastPrintStatus;
     const previousTask = this.lastTaskId;
@@ -164,6 +190,10 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
         filename: info.filename,
         taskId: info.taskId,
         totalLayer: info.totalLayer,
+        // First sight of a print is not its start when cthulhu restarts
+        // mid-print, or the print began before it connected. CurrentTicks is
+        // the printer's elapsed print time in ms, so work back from it.
+        startedAt: new Date(Date.now() - (info.currentTicks ?? 0)).toISOString(),
       });
     }
 
@@ -182,6 +212,10 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
 
   applyAttributes(attributes: PrinterAttributes): void {
     this.view.attributes = attributes;
+    this.view.releaseFilmState =
+      attributes.devicesStatus.releaseFilmState ?? this.view.releaseFilmState;
+    this.view.cameraStatus = attributes.cameraStatus ?? this.view.cameraStatus;
+    this.view.releaseFilmMax = attributes.releaseFilmMax ?? this.view.releaseFilmMax;
     this.touch();
   }
 

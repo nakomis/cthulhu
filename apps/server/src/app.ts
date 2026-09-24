@@ -4,7 +4,10 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { CameraProxy } from './camera.js';
 import type { Config } from './config.js';
+import { listPrintableFiles } from './file-list.js';
+import { extractGooPreview } from './goo-preview.js';
 import type { History } from './history.js';
+import type { PreviewStore } from './previews.js';
 import type { PrinterService } from './printer.js';
 import type { PrinterStore } from './store.js';
 import { registerWs } from './ws.js';
@@ -17,11 +20,13 @@ export interface BuildAppOptions {
   printer?: PrinterService;
   history?: History;
   camera?: CameraProxy;
+  /** Where upload previews are kept. Without it, uploads take none. */
+  previews?: PreviewStore;
   logger?: boolean;
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
-  const { config, store, printer, history, camera, webRoot, logger = false } = options;
+  const { config, store, printer, history, camera, previews, webRoot, logger = false } = options;
   const app = Fastify({ logger });
 
   // Registered before the routes that use it, and before the static handler,
@@ -55,8 +60,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const client = printer?.client;
     if (!client) return reply.code(503).send({ error: 'Not connected to the printer' });
     try {
-      const result = await client.listFiles();
-      return result;
+      return { files: await listPrintableFiles(client) };
     } catch (err) {
       return reply.code(502).send({ error: String(err) });
     }
@@ -139,6 +143,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     done(null, body),
   );
 
+  app.get<{ Params: { name: string } }>('/api/preview/:name', async (request, reply) => {
+    const png = previews?.load(request.params.name);
+    if (!png) return reply.code(404).send({ error: 'No preview for that file' });
+    return reply.type('image/png').header('Cache-Control', 'no-cache').send(png);
+  });
+
   app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {
     const filename = request.headers['x-filename'];
     if (typeof filename !== 'string' || filename.length === 0) {
@@ -170,7 +180,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
       const path = await client.confirmUploaded(filename);
-      return { ...result, path };
+      // Now or never: the printer cannot send a file back, so a preview can
+      // only be taken from the bytes on their way in.
+      const png = previews ? extractGooPreview(body) : undefined;
+      if (png) previews?.save(filename, png);
+      return { ...result, path, preview: png !== undefined };
     } catch (err) {
       if (err instanceof UploadError || err instanceof UploadRejectedError) {
         return reply.code(502).send({ error: err.message });

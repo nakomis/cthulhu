@@ -22,6 +22,7 @@ If you find this useful, please consider buying me a coffee:
 
 - [Repository Layout](#repository-layout)
 - [The protocol](#the-protocol)
+- [What the real printer taught us](#what-the-real-printer-taught-us)
 - [Development](#development)
   * [Running against a printer](#running-against-a-printer)
 - [Deployment](#deployment)
@@ -44,25 +45,44 @@ If you find this useful, please consider buying me a coffee:
 
 ## The protocol
 
-Documented by the community at <https://docs.opencentauri.cc/software/api/>,
-written up from the Elegoo Discord.
+SDCP V3.0.0, specified by CBD-Tech (Chitubox) for resin printers:
+<https://github.com/cbd-tech/SDCP-Smart-Device-Control-Protocol-V3.0.0>.
 
 > [!WARNING]
-> Those docs describe the **Centauri Carbon, which is an FDM printer**. The
-> Mars 5 Ultra is SLA. Expect nozzle and bed temperature fields to be absent or
-> meaningless, `.goo` files instead of `.gcode`, and some status codes to
-> differ. Treat the documentation as a hypothesis and verify against recorded
-> traffic from the real machine.
+> The spec is generic across Chitubox boards, and the Mars 5 Ultra departs
+> from it in ways that matter - see
+> [What the real printer taught us](#what-the-real-printer-taught-us). Where
+> the spec and a recorded capture disagree, the capture wins. The community
+> docs at docs.opencentauri.cc describe the Centauri Carbon, an FDM printer,
+> and are not a reliable guide to this one.
 
 Three fields are **misspelled in the wire format** and must be sent and parsed
 exactly as-is: `CurrenCoord`, `RelaseFilmState` and
 `MaximumCloudSDCPSercicesAllowed`. The client reads both the misspelled and the
 corrected spelling, in case a firmware update quietly fixes them.
 
-`MaximumVideoStreamAllowed` is **1**. This is a hard design constraint, not a
-tuning parameter: the server holds the single upstream camera connection and
-fans it out to browsers, and drops it when nobody is watching so the Elegoo app
-still works.
+`MaximumVideoStreamAllowed` is **2** on the real printer. The server holds a
+single upstream camera connection and fans it out to browsers, and drops it
+when nobody is watching, so the second slot stays free for the Elegoo app.
+
+## What the real printer taught us
+
+Found against an Elegoo Mars 5 Ultra, firmware V1.5.0, on 23–24 September
+2026. The captures are in `packages/sdcp/fixtures/`, and
+`real-capture.test.ts` checks the parser against every frame of a real print.
+
+| Finding | Consequence |
+|---|---|
+| `S-File-MD5` is a **form field**, not a header | Sent only as a header, every upload is accepted packet by packet with `success:true`, then fails its MD5 check and is deleted |
+| A rejected upload is reported **only** as `sdcp/error` (`ErrorCode` 1 MD5, 2 format) | An upload has succeeded only once the printer lists it in `/local`: `confirmUploaded()` |
+| While it checks a file, the printer holds it as `/local/<uuid>_<name>` and reports machine status `[2, 8]` | A listing taken then shows a file that is about to vanish |
+| The camera is RTSP **over UDP only**; asked for TCP it answers "Nonmatching transport" | ffmpeg uses `-rtsp_transport udp+tcp` |
+| `MaximumVideoStreamAllowed` is **2**, and the printer's count of enabled streams can stick at the limit with nobody watching | It then refuses Cmd 386 with Ack 1 while its RTSP server keeps serving: cthulhu falls back to the last URL |
+| `DevicesStatus` (film health and friends) comes only in **attributes**, without `XMotorStatus` | The store takes it from whichever frame has it |
+| Status has no `TempOfBox`, `CurrenCoord`, `PrintScreen` or `PreviousStatus` | Parsed as optional, as ever |
+| `CurrentTicks` / `TotalTicks` are milliseconds | The touchscreen's 2 h 14 m matched |
+| A normal print ends 7 (Stopping) → 9 (Complete) | Status 7 with no layers left is labelled "Finishing" |
+| Uploads run at about 100 KB/s over the printer's WiFi | 13 MB takes about two and a half minutes |
 
 ## Development
 

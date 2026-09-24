@@ -70,14 +70,16 @@ describe('the fake printer, driven by the real client', () => {
     const attrs = await attrsPromise;
 
     // The camera proxy design depends on this being 1.
-    expect(attrs.maximumVideoStreamAllowed).toBe(1);
+    expect(attrs.maximumVideoStreamAllowed).toBe(2);
   });
 
   it('reads the misspelled RelaseFilmState through to a typed field', async () => {
-    const statusPromise = nextStatus(client);
-    await client.refreshStatus();
-    const status = await statusPromise;
-    expect(status.devicesStatus.releaseFilmState).toBe(1);
+    // From ATTRIBUTES: the real Mars 5 Ultra never sends it in status.
+    const attrsPromise = new Promise<{ devicesStatus: { releaseFilmState: number | undefined } }>(
+      (r) => client.once('attributes', r),
+    );
+    await client.refreshAttributes();
+    expect((await attrsPromise).devicesStatus.releaseFilmState).toBe(1);
   });
 
   it('preserves the raw payload so nothing is lost when the shape differs', async () => {

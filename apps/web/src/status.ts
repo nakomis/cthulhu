@@ -37,8 +37,31 @@ export function isActive(code: number | undefined): boolean {
   return code !== undefined && code >= 1 && code <= 5;
 }
 
+/** Homing, dropping, exposing or lifting: something Pause can interrupt. */
+export function canPause(code: number | undefined): boolean {
+  return code !== undefined && code >= 1 && code <= 4;
+}
+
+/** Only a paused print can be resumed - not an idle or finished printer. */
+export function canResume(code: number | undefined): boolean {
+  return code === 6;
+}
+
+/** Anything from homing to paused is a print that Stop would abandon. */
+export function canStop(code: number | undefined): boolean {
+  return code !== undefined && code >= 1 && code <= 6;
+}
+
 /** Release film health. 1 is healthy; anything else is worth shouting about. */
 export function releaseFilmLabel(state: number | undefined): string {
   if (state === undefined) return 'Unknown';
-  return state === 1 ? 'OK' : `Check film (${state})`;
+  return state === 1 ? 'Healthy' : `Check film (${state})`;
+}
+
+/** "1,000 / 60,000 layers (2%)", or as much of it as the printer reported. */
+export function releaseFilmUsage(uses: number | undefined, max: number | undefined): string {
+  if (uses === undefined) return '';
+  const n = (v: number) => v.toLocaleString('en-GB');
+  if (!max) return `${n(uses)} layers`;
+  return `${n(uses)} / ${n(max)} layers (${Math.round((uses / max) * 100)}%)`;
 }

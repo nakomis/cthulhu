@@ -8,6 +8,7 @@ import { WebSocket } from 'ws';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { History } from './history.js';
+import { PreviewStore } from './previews.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
 
@@ -48,7 +49,13 @@ beforeEach(async () => {
     discoverImpl: async () => [],
   });
   await service.start();
-  app = buildApp({ config, store, printer: service, history });
+  app = buildApp({
+    config,
+    store,
+    printer: service,
+    history,
+    previews: new PreviewStore(join(dir, 'previews')),
+  });
 });
 
 afterEach(async () => {
@@ -85,7 +92,7 @@ describe('GET /api/status', () => {
   it('exposes the single-stream limit from attributes', async () => {
     await settle();
     const json = (await app.inject({ method: 'GET', url: '/api/status' })).json();
-    expect(json.attributes.maximumVideoStreamAllowed).toBe(1);
+    expect(json.attributes.maximumVideoStreamAllowed).toBe(2);
   });
 });
 
@@ -277,6 +284,38 @@ describe('uploading a realistically-sized file', () => {
     });
 
     expect(res.json().md5).toBe(expected);
+  });
+
+  it('keeps the slicer preview of an uploaded .goo, and serves it', async () => {
+    await settle();
+    // The same layout as a real .goo header: see goo-preview.ts.
+    const header = Buffer.alloc(194);
+    header.write('V3.0', 0, 'latin1');
+    Buffer.from([0x07, 0, 0, 0, 0x44, 0x4c, 0x50, 0]).copy(header, 4);
+    const goo = Buffer.concat([
+      header,
+      Buffer.alloc(116 * 116 * 2),
+      Buffer.from('\r\n'),
+      Buffer.alloc(290 * 290 * 2, 0x55),
+      Buffer.from('\r\n'),
+      Buffer.alloc(4096),
+    ]);
+
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'rook.goo' },
+      payload: goo,
+    });
+    expect(upload.statusCode).toBe(200);
+    expect(upload.json()).toMatchObject({ path: '/local/rook.goo', preview: true });
+
+    const preview = await app.inject({ method: 'GET', url: '/api/preview/rook.goo' });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers['content-type']).toBe('image/png');
+
+    const none = await app.inject({ method: 'GET', url: '/api/preview/never-uploaded.goo' });
+    expect(none.statusCode).toBe(404);
   });
 
   it('still rejects a non-.goo/.ctb file, however large', async () => {

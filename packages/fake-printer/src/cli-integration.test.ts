@@ -59,10 +59,12 @@ describe('cthulhu-sdcp status', () => {
       String(printer.wsPort),
       '--raw',
     ]);
-    const jsonLine = stdout.split('\n').find((l) => l.startsWith('{'));
-    expect(jsonLine).toBeDefined();
-    // The misspelling must survive all the way to the operator's terminal.
-    expect(JSON.stringify(JSON.parse(jsonLine as string))).toContain('RelaseFilmState');
+    const frames = stdout.split('\n').filter((l) => l.startsWith('{'));
+    expect(frames.length).toBeGreaterThan(0);
+    // The misspelling must survive all the way to the operator's terminal. It
+    // is in the attributes frame: the real printer sends none in status.
+    const attributes = frames.map((l) => JSON.parse(l)).find((f) => f.Attributes);
+    expect(JSON.stringify(attributes)).toContain('RelaseFilmState');
   }, 20_000);
 });
 
@@ -111,7 +113,7 @@ describe('cthulhu-sdcp --record', () => {
     // If the recorder ever "tidied" these, the capture would be useless as a
     // fixture - it would no longer be what the printer sent.
     expect(raw).toContain('RelaseFilmState');
-    expect(raw).toContain('CurrenCoord');
+    expect(raw).toContain('MaximumCloudSDCPSercicesAllowed');
   }, 20_000);
 });
 
@@ -127,4 +129,19 @@ describe('cthulhu-sdcp discover', () => {
       run('node', [CLI, 'discover', '--timeout', '400', '--broadcast', '192.0.2.255']),
     ).rejects.toMatchObject({ code: 1 });
   }, 20_000);
+});
+
+describe('cthulhu-sdcp usage', () => {
+  it('prints usage for --help and exits, rather than watching forever', async () => {
+    const { stdout } = await run('node', [CLI, '--help'], { timeout: 5000 });
+    expect(stdout).toContain('usage:');
+    expect(stdout).toContain('cthulhu-sdcp watch');
+  });
+
+  it('refuses an unknown command with usage on stderr', async () => {
+    await expect(run('node', [CLI, 'wtach'], { timeout: 5000 })).rejects.toMatchObject({
+      code: 2,
+      stderr: expect.stringContaining('unknown command: wtach'),
+    });
+  });
 });

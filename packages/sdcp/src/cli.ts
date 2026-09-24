@@ -129,8 +129,30 @@ function describeStatus(s: import('./status.js').PrinterStatus): string {
   return parts.join('  ');
 }
 
+const USAGE = `usage:
+  cthulhu-sdcp discover [--broadcast 172.29.255.255] [--timeout ms]
+  cthulhu-sdcp status   [--ip 172.29.0.x] [--port 3030] [--record capture.jsonl] [--raw]
+  cthulhu-sdcp watch    [--ip 172.29.0.x] [--port 3030] [--record capture.jsonl] [--raw]
+
+Without --ip, status and watch find the printer by broadcast.
+--record appends every frame, verbatim, as JSON Lines.`;
+
+const COMMANDS = new Set(['discover', 'status', 'watch']);
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+
+  // Anything unrecognised used to fall through to `watch`, which never
+  // returns: `cthulhu-sdcp --help` sat discovering, then watching, forever.
+  if (['help', '--help', '-h'].includes(args.command)) {
+    out(USAGE);
+    return;
+  }
+  if (!COMMANDS.has(args.command)) {
+    process.stderr.write(`unknown command: ${args.command}\n\n${USAGE}\n`);
+    process.exitCode = 2;
+    return;
+  }
 
   if (args.command === 'discover') {
     const found = await discover({
@@ -167,6 +189,13 @@ async function main(): Promise<void> {
     record('attributes', a.raw);
     out(args.raw ? JSON.stringify(a.raw) : `attributes: ${a.machineName ?? '?'}`);
   });
+  // Recorded too: an upload's MD5 failure arrives ONLY as sdcp/error, and a
+  // capture without it looks like a successful transfer.
+  client.on('printerError', (e) => {
+    record('error', e.raw);
+    out(args.raw ? JSON.stringify(e.raw) : `printer error: code ${e.errorCode ?? '?'}`);
+  });
+  client.on('notice', (n) => record('notice', n));
   client.on('error', (e) => process.stderr.write(`error: ${e.message}\n`));
 
   await client.connect();
