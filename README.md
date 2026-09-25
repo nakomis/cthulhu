@@ -5,7 +5,7 @@
 Imagine an [Octopus](https://octoprint.org/) rising up from a vat of goo.
 
 In FDM printing, you're driving G-code over a serial link to
-Marlin-style boards - [OctoPrint](https://octoprint.org/) is the way to go . A resin printer is a 
+Marlin-style boards - [OctoPrint](https://octoprint.org/) is the way to go. A resin printer is a
 very different beast; it's a layer-image machine with a Chitu
 mainboard, so there is nothing for OctoPrint to talk to. What the printer *does*
 expose is **SDCP** (Smart Device Control Protocol) over the LAN — and that is
