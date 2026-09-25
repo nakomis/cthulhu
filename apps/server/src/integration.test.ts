@@ -111,6 +111,15 @@ describe('GET /api/status', () => {
     expect(json.releaseFilmState).toBe(1);
   });
 
+  it('can be read cross-origin, for the NakTV app', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/status',
+      headers: { origin: 'null' },
+    });
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+
   it('exposes the single-stream limit from attributes', async () => {
     await settle();
     const json = (await app.inject({ method: 'GET', url: '/api/status' })).json();
