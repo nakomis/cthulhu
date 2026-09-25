@@ -30,6 +30,13 @@ export interface CameraProxyOptions {
 }
 
 /**
+ * Where each part of the multipart stream begins. Every upstream uses the
+ * boundary `frame`: ffmpeg is run with `-boundary_tag frame`, the fake printer
+ * serves it, and the responses to viewers declare it.
+ */
+const PART_START = Buffer.from('--frame\r\n');
+
+/**
  * Multiplexes the printer's single MJPEG stream to many browsers.
  *
  * ────────────────────────────────────────────────────────────────────────────
@@ -43,6 +50,9 @@ export interface CameraProxyOptions {
 export class CameraProxy {
   private upstream: UpstreamHandle | undefined;
   private readonly viewers = new Set<PassThrough>();
+  /** Viewers that have been started at a part boundary; see deliver(). */
+  private readonly aligned = new WeakSet<PassThrough>();
+  private readonly tails = new WeakMap<PassThrough, Buffer>();
   private opening: Promise<void> | undefined;
   private readonly openUpstream: () => Promise<UpstreamHandle>;
   private readonly onActive: (() => void | Promise<void>) | undefined;
@@ -87,7 +97,7 @@ export class CameraProxy {
       const handle = await this.openUpstream();
       this.upstream = handle;
       handle.stream.on('data', (chunk: Buffer) => {
-        for (const v of this.viewers) v.write(chunk);
+        for (const v of this.viewers) this.deliver(v, chunk);
       });
       // The upstream died on its own (ffmpeg exited, or never started). Tell
       // the printer too: it counts every enable against
@@ -109,6 +119,34 @@ export class CameraProxy {
     } finally {
       this.opening = undefined;
     }
+  }
+
+  /**
+   * Write a chunk to one viewer, starting a new viewer at the next part.
+   *
+   * Chunks fall wherever the upstream happens to flush, so a viewer joining a
+   * stream that is already running would otherwise start part-way through a
+   * JPEG with no boundary line first. Browsers shrug that off; ffmpeg's
+   * multipart probe gives up with "Invalid data found", which left go2rtc's
+   * feed for the TV silently video-less (CTHU-23). Until a viewer has seen a
+   * boundary it gets nothing, and then everything from that boundary on.
+   */
+  private deliver(viewer: PassThrough, chunk: Buffer): void {
+    if (this.aligned.has(viewer)) {
+      viewer.write(chunk);
+      return;
+    }
+    // Keep the tail of the last chunk: a boundary can straddle two chunks.
+    const tail = this.tails.get(viewer);
+    const data = tail ? Buffer.concat([tail, chunk]) : chunk;
+    const at = data.indexOf(PART_START);
+    if (at === -1) {
+      this.tails.set(viewer, data.subarray(Math.max(0, data.length - (PART_START.length - 1))));
+      return;
+    }
+    this.tails.delete(viewer);
+    this.aligned.add(viewer);
+    viewer.write(data.subarray(at));
   }
 
   private async closeUpstream(): Promise<void> {

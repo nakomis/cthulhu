@@ -162,4 +162,32 @@ describe('camera proxy against a printer that allows exactly one stream', () => 
     expect(proxy.upstreamOpen).toBe(false);
     expect(idled).toBe(1);
   });
+
+  it('starts a viewer who joins mid-stream at the next part, not mid-frame', async () => {
+    // go2rtc's ffmpeg joined the running feed for the TV part-way through a
+    // JPEG and gave up with "Invalid data found" (CTHU-23).
+    const { PassThrough } = await import('node:stream');
+    const upstream = new PassThrough();
+    proxy = new CameraProxy({ openUpstream: async () => ({ stream: upstream, abort: () => {} }) });
+    const part = (n: number) => `--frame\r\nContent-Type: image/jpeg\r\n\r\nJPEG${n}\r\n`;
+    const collect = (v: PassThrough) => {
+      const got: Buffer[] = [];
+      v.on('data', (c: Buffer) => got.push(c));
+      return () => Buffer.concat(got).toString();
+    };
+
+    const first = collect(await proxy.addViewer());
+    upstream.write(part(1).slice(0, 20));
+    await new Promise((r) => setImmediate(r));
+
+    const late = collect(await proxy.addViewer());
+    // The rest of part 1, then part 2 with its boundary split across writes.
+    upstream.write(part(1).slice(20));
+    upstream.write(part(2).slice(0, 4));
+    upstream.write(part(2).slice(4));
+    await new Promise((r) => setImmediate(r));
+
+    expect(first()).toBe(part(1) + part(2));
+    expect(late()).toBe(part(2));
+  });
 });
