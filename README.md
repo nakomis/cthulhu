@@ -2,13 +2,14 @@
 
 <img src="docs/logo.png" alt="Cthulhu logo" width="200" align="right"/>
 
-OctoPrint, but only the bits I want, for a resin printer.
+Imagine an [Octopus](https://octoprint.org/) rising up from a vat of goo.
 
-OctoPrint itself is no use here: it drives G-code over a serial link to
-Marlin-style boards. A resin printer is a layer-image machine with a Chitu
+In FDM printing, you're driving G-code over a serial link to
+Marlin-style boards - [OctoPrint](https://octoprint.org/) is the way to go . A resin printer is a 
+very different beast; it's a layer-image machine with a Chitu
 mainboard, so there is nothing for OctoPrint to talk to. What the printer *does*
 expose is **SDCP** (Smart Device Control Protocol) over the LAN — and that is
-enough to rebuild the useful half of OctoPrint from scratch.
+enough to do the bits we really need.
 
 ## Support
 
