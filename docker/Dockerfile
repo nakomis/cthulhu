@@ -73,6 +73,12 @@ COPY --from=build /prod/server/dist ./apps/server/dist
 COPY --from=build /prod/server/package.json ./apps/server/
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 
+# Docker seeds a new named volume from the image's directory, ownership
+# included. Without these the volumes come up root-owned, and the first write
+# as node fails with EACCES: on phi that crash-looped the camera service
+# mid-print and wedged the printer's RTSP until a power cycle (CTHU-22).
+RUN mkdir -p /data /timelapses && chown node:node /data /timelapses
+
 EXPOSE 9120
 USER node
 CMD ["node", "apps/server/dist/index.js"]

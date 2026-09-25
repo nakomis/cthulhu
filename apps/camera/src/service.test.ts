@@ -138,6 +138,48 @@ describe('time-lapse routes', () => {
     ).toEqual(['task-7']);
   });
 
+  it('answers 500 and stays up when saving a frame throws', async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { TimelapseStore } = await import('./timelapse.js');
+    const { createCameraService } = await import('./service.js');
+    const upstream = new PassThrough();
+    let opened = 0;
+    const store = new TimelapseStore({ dir: mkdtempSync(join(tmpdir(), 'tl-svc-')) });
+    // What a root-owned volume did on phi.
+    store.addFrame = () => {
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    };
+    const lines: string[] = [];
+    const { server } = createCameraService({
+      timelapse: store,
+      log: (line) => lines.push(line),
+      openUpstream: async () => {
+        opened += 1;
+        return { stream: upstream, abort: () => {} };
+      },
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    close = () =>
+      new Promise((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      });
+
+    await fetch(`${base}/timelapse/task-9/start`, { method: 'POST' });
+    upstream.write(frame);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const res = await fetch(`${base}/timelapse/task-9/frame?layer=0`, { method: 'POST' });
+    expect(res.status).toBe(500);
+    expect(lines.some((l) => l.includes('EACCES'))).toBe(true);
+    expect((await fetch(`${base}/health`)).status).toBe(200);
+    // Still the one upstream: nothing was torn down and reopened.
+    expect(opened).toBe(1);
+  });
+
   it('serves the finished video, with Range support, and plain metadata', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');

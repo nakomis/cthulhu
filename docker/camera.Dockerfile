@@ -61,6 +61,12 @@ COPY --from=build /prod/camera/node_modules ./node_modules
 COPY --from=build /prod/camera/dist ./dist
 COPY --from=build /prod/camera/package.json ./
 
+# Docker seeds a new named volume from the image's directory, ownership
+# included. Without these the volumes come up root-owned, and the first write
+# as node fails with EACCES: on phi that crash-looped the camera service
+# mid-print and wedged the printer's RTSP until a power cycle (CTHU-22).
+RUN mkdir -p /timelapse && chown node:node /timelapse
+
 EXPOSE 9121
 USER node
 CMD ["node", "dist/index.js"]
