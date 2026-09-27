@@ -57,6 +57,8 @@ export interface FakePrinter {
   readonly wsPort: number;
   /** Files uploaded over the HTTP transfer interface during this run. */
   readonly uploads: Map<string, UploadedFile>;
+  /** How many distinct TCP connections have carried an upload packet. */
+  uploadSockets(): number;
   readonly mainboardId: string;
   readonly state: PrinterState;
   /** Advance the simulation manually; tests use this instead of waiting. */
@@ -98,6 +100,11 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   const uploads = new Map<string, UploadedFile>();
   // In-flight chunked uploads, keyed by the Uuid the client keeps constant.
   const partials = new Map<string, { filename: string; totalSize: number; received: Buffer }>();
+  // Distinct TCP sockets that have carried an upload packet. Counted because a
+  // new connection to the REAL printer costs about seven seconds, so "did the
+  // whole file arrive on one socket" is a correctness property, not a detail.
+  let uploadSocketCount = 0;
+  const SEEN = Symbol('cthulhu.uploadSocketSeen');
 
   const http: HttpServer = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -183,6 +190,12 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
     }
 
     if (url.pathname === '/uploadFile/upload' && req.method === 'POST') {
+      const socket = req.socket as unknown as Record<symbol, true | undefined>;
+      if (!socket[SEEN]) {
+        socket[SEEN] = true;
+        uploadSocketCount += 1;
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
@@ -538,6 +551,7 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   return {
     wsPort,
     uploads,
+    uploadSockets: () => uploadSocketCount,
     mainboardId,
     state,
     tick: (deltaMs: number) => state.tick(deltaMs),
