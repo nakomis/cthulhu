@@ -6,6 +6,7 @@ import {
   type SocketLike,
   StartPrintError,
   UPLOAD_CHUNK_BYTES,
+  UploadRejectedError,
   uploadFile,
 } from '@cthulhu/sdcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -240,5 +241,46 @@ describe('Cmd 255, terminating a file transfer', () => {
     await expect(
       client.terminateFileTransfer('never-existed', 'ghost.goo'),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('confirmUploaded, waiting for a slow printer (CTHU-29)', () => {
+  it('does NOT give up while the printer says it is still transferring', async () => {
+    // The bug this guards, met on a real 368 MB upload: after the last packet
+    // the printer finalises and MD5s the file, reporting FileTransferring
+    // throughout. The old flat 30s deadline expired during that, so a
+    // PERFECTLY GOOD transfer was reported as "never appeared on the printer"
+    // — and the obvious response, re-uploading, costs minutes and fixes
+    // nothing. A busy printer has not failed.
+    printer.state.setMachineStatus(MachineStatus.FileTransferring);
+    printer.pushStatus();
+    await new Promise((r) => setTimeout(r, 60));
+
+    // A deadline far shorter than the time we spend transferring.
+    const verdict = client.confirmUploaded('slow.goo', { timeoutMs: 120, intervalMs: 20 });
+
+    // Stay "transferring" for well past that deadline, pushing status as the
+    // real printer does, then finish and list the file.
+    for (let i = 0; i < 8; i += 1) {
+      printer.pushStatus();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    printer.state.setMachineStatus(MachineStatus.Idle);
+    printer.addFile('slow.goo');
+    printer.pushStatus();
+
+    await expect(verdict).resolves.toBe('/local/slow.goo');
+  });
+
+  it('still gives up once the printer is idle and the file is absent', async () => {
+    // The timeout must not become unbounded: an idle printer that is not
+    // listing the file really has lost it.
+    printer.state.setMachineStatus(MachineStatus.Idle);
+    printer.pushStatus();
+    await new Promise((r) => setTimeout(r, 60));
+
+    await expect(
+      client.confirmUploaded('missing.goo', { timeoutMs: 150, intervalMs: 25 }),
+    ).rejects.toBeInstanceOf(UploadRejectedError);
   });
 });

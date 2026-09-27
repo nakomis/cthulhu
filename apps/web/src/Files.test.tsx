@@ -394,3 +394,35 @@ describe('formatMegabytes', () => {
     expect(formatMegabytes(351 * 1024 * 1024)).toBe('351 MB');
   });
 });
+
+describe('Files: a failed upload still re-reads the list (CTHU-29)', () => {
+  it('refreshes even when the upload reports failure', async () => {
+    // "Failed" can be a false negative: the printer is slower to list a large
+    // file than cthulhu is to give up waiting for it. Leaving the list stale
+    // made a working upload look doubly broken — the file WAS there, just
+    // invisible until a manual page refresh. The printer is the authority on
+    // what it holds, not our verdict about it.
+    const listFilesSpy = vi
+      .fn()
+      .mockResolvedValueOnce([file('cthulhu.goo')])
+      .mockResolvedValue([file('cthulhu.goo'), file('calhead.goo')]);
+
+    render(
+      <Files
+        listFiles={listFilesSpy}
+        uploadFile={vi.fn().mockRejectedValue(new Error('calhead.goo never appeared'))}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+    await userEvent.upload(
+      screen.getByTestId('file-input') as HTMLInputElement,
+      new File(['x'], 'calhead.goo'),
+    );
+
+    // The failure is still reported honestly...
+    expect(await screen.findByRole('status')).toHaveTextContent('never appeared');
+    // ...but the file the printer actually holds is now visible.
+    expect(await screen.findByText('calhead.goo')).toBeInTheDocument();
+  });
+});

@@ -61,6 +61,8 @@ export interface FakePrinter {
   uploadSockets(): number;
   /** Paths deleted by Cmd 259 during this run, in the order asked for. */
   readonly deleted: string[];
+  /** Put a file in /local without uploading it, for tests about listing. */
+  addFile(name: string): void;
   /** Upload uuids abandoned by Cmd 255. */
   readonly terminated: string[];
   /** Uuids of transfers that arrived but never completed. */
@@ -628,6 +630,9 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
     uploadSockets: () => uploadSocketCount,
     deleted,
     terminated,
+    addFile: (name: string) => {
+      knownFiles.add(name);
+    },
     partialUploads: () => [...partials.keys()],
     files: () => [...knownFiles],
     mainboardId,

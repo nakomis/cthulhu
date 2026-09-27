@@ -19,6 +19,16 @@ export interface PrintJob {
 export class PrinterState {
   private printStatus: number = PrintStatus.Idle;
   private machineStatus: number = MachineStatus.Idle;
+
+  /**
+   * Force the machine status, so a test can hold the printer in
+   * FileTransferring. The real machine sits there while it finalises and MD5s
+   * a file it has just received, which on a large one takes long enough to
+   * matter — see CTHU-29.
+   */
+  setMachineStatus(status: number): void {
+    this.machineStatus = status;
+  }
   private job: PrintJob | undefined;
   private currentLayer = 0;
   private elapsedMs = 0;
