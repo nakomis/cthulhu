@@ -1,6 +1,13 @@
 import { createReadStream, statSync } from 'node:fs';
 import { type CameraProxy, parseRange } from '@cthulhu/camera';
-import { StartPrintError, UploadError, UploadRejectedError, uploadFile } from '@cthulhu/sdcp';
+import {
+  BatchDeleteError,
+  MachineStatus,
+  StartPrintError,
+  UploadError,
+  UploadRejectedError,
+  uploadFile,
+} from '@cthulhu/sdcp';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -133,6 +140,79 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     await client.stop();
     await history?.finishPrint(store.snapshot().print.taskId, 'stopped');
     return { ok: true };
+  });
+
+  /**
+   * Delete files from the printer's storage.
+   *
+   * Takes a list rather than a path parameter because the printer's own command
+   * is a batch one (Cmd 259 carries FileList and FolderList), and because
+   * deleting six files one request at a time would mean six round trips over a
+   * link where a round trip is not cheap.
+   *
+   * Like /api/control/stop, this requires an explicit confirm: deletion is
+   * irreversible and the printer has no recycle bin.
+   */
+  app.post('/api/files/delete', async (request, reply) => {
+    const body = (request.body ?? {}) as { files?: unknown; confirm?: unknown };
+    if (body.confirm !== true) {
+      return reply.code(400).send({
+        error: 'Deleting is irreversible. Send {"confirm": true} to proceed.',
+      });
+    }
+    if (!Array.isArray(body.files) || body.files.length === 0) {
+      return reply.code(400).send({ error: 'files must be a non-empty array of paths' });
+    }
+    const files = body.files.map(String);
+    // Absolute and storage-qualified, as the printer expects and as
+    // /api/files reports. A bare name would delete nothing and still ack.
+    const bad = files.filter((path) => !/^\/(local|usb)\//.test(path));
+    if (bad.length > 0) {
+      return reply.code(400).send({
+        error: `Paths must be absolute and storage-qualified, e.g. /local/part.goo — got: ${bad.join(', ')}`,
+      });
+    }
+
+    const client = requireClient(reply);
+    if (!client) return;
+
+    // Refusing to delete the file being printed. The printer might well allow
+    // it; losing a running job to a mis-click is not worth finding out.
+    //
+    // print.filename alone is NOT enough to decide that: it comes straight from
+    // the printer's status, which keeps showing the LAST print's name at
+    // Complete, Stopped and Idle. Guarding on the name by itself would make a
+    // file undeletable for ever once it had been printed. The machine has to
+    // actually be printing.
+    const snapshot = store.snapshot();
+    const busy = snapshot.machineStatus.includes(MachineStatus.Printing);
+    const current = busy ? snapshot.print.filename : undefined;
+    if (current) {
+      const clash = files.filter((path) => path === current || path.endsWith(`/${current}`));
+      if (clash.length > 0) {
+        return reply
+          .code(409)
+          .send({ error: `${current} is printing right now; stop the print first` });
+      }
+    }
+
+    try {
+      await client.deleteFiles(files);
+    } catch (err) {
+      if (err instanceof BatchDeleteError) {
+        return reply.code(502).send({ error: err.message, ack: err.ack });
+      }
+      throw err;
+    }
+
+    // The printer pushes no new listing, so re-read it here and hand it back:
+    // it saves the caller a second request, and it is the only proof the
+    // delete actually took effect rather than merely being acked.
+    try {
+      return { ok: true, deleted: files, files: await listPrintableFiles(client) };
+    } catch {
+      return { ok: true, deleted: files };
+    }
   });
 
   app.post('/api/print', async (request, reply) => {

@@ -6,6 +6,7 @@ export interface FilesProps {
   listFiles?: () => Promise<PrinterFile[]>;
   uploadFile?: (file: File) => Promise<unknown>;
   startPrint?: (filename: string) => Promise<unknown>;
+  deleteFiles?: (paths: string[]) => Promise<unknown>;
   fileMeta?: (path: string) => Promise<FileMeta | undefined>;
   onChanged?: () => void;
   /** Whether a print is already running; starting another would be refused. */
@@ -16,6 +17,7 @@ export function Files({
   listFiles = api.files,
   uploadFile = api.upload,
   startPrint = api.startPrint,
+  deleteFiles = api.deleteFiles,
   fileMeta = api.fileMeta,
   onChanged,
   busy = false,
@@ -23,6 +25,13 @@ export function Files({
   const [files, setFiles] = useState<PrinterFile[]>([]);
   const [message, setMessage] = useState<string | undefined>();
   const [working, setWorking] = useState(false);
+  /**
+   * Path awaiting a second click. Deletion is irreversible and the printer has
+   * no recycle bin, so Delete arms and a second press commits — rather than a
+   * window.confirm, which is a modal the TV's browser handles badly and which
+   * tests can only reach by stubbing a global.
+   */
+  const [confirming, setConfirming] = useState<string | undefined>();
   const input = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -46,6 +55,22 @@ export function Files({
     try {
       await uploadFile(file);
       setMessage(`Uploaded ${file.name}`);
+      await refresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const onDelete = async (path: string, name: string) => {
+    setConfirming(undefined);
+    setWorking(true);
+    setMessage(`Deleting ${name}…`);
+    try {
+      await deleteFiles([path]);
+      setMessage(`Deleted ${name}`);
+      // The printer pushes no new listing after a delete, so ask for one.
       await refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -115,14 +140,45 @@ export function Files({
                   <FileDetails path={f.path} fileMeta={fileMeta} />
                 </span>
               </span>
-              <button
-                type="button"
-                disabled={working || busy}
-                onClick={() => void onPrint(f.path)}
-                className="shrink-0 rounded border border-tentacle/50 px-3 py-1 text-sm text-tentacle disabled:opacity-40"
-              >
-                Print
-              </button>
+              {confirming === f.path ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={working}
+                    onClick={() => void onDelete(f.path, f.name)}
+                    className="shrink-0 rounded border border-red-500 bg-red-500/10 px-3 py-1 text-sm text-red-300 disabled:opacity-40"
+                  >
+                    Delete for good
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirming(undefined)}
+                    className="shrink-0 rounded border border-slate-600 px-3 py-1 text-sm disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={working || busy}
+                    onClick={() => void onPrint(f.path)}
+                    className="shrink-0 rounded border border-tentacle/50 px-3 py-1 text-sm text-tentacle disabled:opacity-40"
+                  >
+                    Print
+                  </button>
+                  <button
+                    type="button"
+                    disabled={working}
+                    aria-label={`Delete ${f.name}`}
+                    onClick={() => setConfirming(f.path)}
+                    className="shrink-0 rounded border border-slate-600 px-3 py-1 text-sm text-slate-400 disabled:opacity-40"
+                  >
+                    Delete
+                  </button>
+                </>
+              )}
             </li>
           ))}
         </ul>

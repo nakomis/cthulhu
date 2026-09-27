@@ -224,6 +224,99 @@ describe('file listing', () => {
   });
 });
 
+describe('POST /api/files/delete', () => {
+  const del = (payload: unknown) =>
+    app.inject({ method: 'POST', url: '/api/files/delete', payload: payload as object });
+
+  it('deletes a file from the printer and hands back the new listing', async () => {
+    await settle();
+    expect(printer.files()).toContain('cthulhu.goo');
+
+    const res = await del({ files: ['/local/cthulhu.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().deleted).toEqual(['/local/cthulhu.goo']);
+    expect(printer.deleted).toEqual(['/local/cthulhu.goo']);
+    expect(printer.files()).not.toContain('cthulhu.goo');
+    // The printer pushes no new listing, so the response carries a re-read one.
+    // Without it a caller cannot tell an acked delete from an effective one.
+    expect(res.json().files.map((f: { name: string }) => f.name)).not.toContain('cthulhu.goo');
+  });
+
+  it('deletes several files in ONE command, not one request each', async () => {
+    // The printer's own command is a batch one, and a round trip to this
+    // machine is not cheap. Six files must not mean six round trips.
+    await settle();
+    const res = await del({ files: ['/local/cthulhu.goo', '/local/test.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(200);
+    expect(printer.deleted).toEqual(['/local/cthulhu.goo', '/local/test.goo']);
+    expect(printer.files()).toEqual([]);
+  });
+
+  it('refuses without an explicit confirm, and deletes nothing', async () => {
+    await settle();
+    const res = await del({ files: ['/local/cthulhu.goo'] });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/irreversible/i);
+    expect(printer.deleted).toEqual([]);
+    expect(printer.files()).toContain('cthulhu.goo');
+  });
+
+  it('rejects a bare filename rather than acking a delete of nothing', async () => {
+    // The printer wants absolute, storage-qualified paths. A bare name is the
+    // mistake a caller is most likely to make, and the real machine would
+    // very likely ack it and delete nothing.
+    await settle();
+    const res = await del({ files: ['cthulhu.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/storage-qualified/);
+    expect(printer.deleted).toEqual([]);
+    expect(printer.files()).toContain('cthulhu.goo');
+  });
+
+  it('rejects an empty list', async () => {
+    await settle();
+    expect((await del({ files: [], confirm: true })).statusCode).toBe(400);
+    expect((await del({ confirm: true })).statusCode).toBe(400);
+    expect(printer.deleted).toEqual([]);
+  });
+
+  it('refuses to delete the file that is printing right now', async () => {
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/print', payload: { filename: 'cthulhu.goo' } });
+    await settle();
+
+    const res = await del({ files: ['/local/cthulhu.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/printing right now/);
+    expect(printer.files()).toContain('cthulhu.goo');
+  });
+
+  it('allows deleting a file once its print has FINISHED', async () => {
+    // The regression this guards: print.filename comes from the printer's
+    // status, which goes on naming the last print at Complete and Idle. A guard
+    // on the name alone would make a file undeletable for ever once printed.
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/print', payload: { filename: 'cthulhu.goo' } });
+    await settle();
+    // Run the print out to Complete.
+    for (let i = 0; i < 400 && store.snapshot().machineStatus.includes(1); i += 1) {
+      printer.tick(200);
+      await settle();
+    }
+    expect(store.snapshot().print.filename).toBe('cthulhu.goo');
+    expect(store.snapshot().machineStatus).not.toContain(1);
+
+    const res = await del({ files: ['/local/cthulhu.goo'], confirm: true });
+    expect(res.statusCode).toBe(200);
+    expect(printer.files()).not.toContain('cthulhu.goo');
+  });
+});
+
 describe('bugs found by running the stack live against the fake printer', () => {
   it('learns the mainboardId from attributes when only a pinned IP is configured', async () => {
     // With PRINTER_IP set and discovery off there is nothing to learn the id

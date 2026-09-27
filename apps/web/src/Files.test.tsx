@@ -121,6 +121,97 @@ describe('Files', () => {
   });
 });
 
+describe('Files: deleting', () => {
+  it('needs a second press before it deletes anything', async () => {
+    // Irreversible, and the printer has no recycle bin. One press arms it.
+    const deleteFiles = vi.fn().mockResolvedValue({ deleted: ['/local/cthulhu.goo'] });
+    render(
+      <Files listFiles={listFiles} deleteFiles={deleteFiles} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    expect(deleteFiles).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(deleteFiles).toHaveBeenCalledWith(['/local/cthulhu.goo']));
+    expect(await screen.findByRole('status')).toHaveTextContent('Deleted cthulhu.goo');
+  });
+
+  it('can be backed out of, leaving the file alone', async () => {
+    const deleteFiles = vi.fn();
+    render(
+      <Files listFiles={listFiles} deleteFiles={deleteFiles} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(deleteFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Delete cthulhu.goo' })).toBeInTheDocument();
+  });
+
+  it('arms only the file that was pressed', async () => {
+    // Two files, one armed: the other must still show its own Delete, or a
+    // confirmation press could bin the wrong file.
+    render(<Files listFiles={listFiles} deleteFiles={vi.fn()} fileMeta={async () => undefined} />);
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+
+    expect(screen.getAllByRole('button', { name: 'Delete for good' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Delete boots.ctb' })).toBeInTheDocument();
+  });
+
+  it('refreshes the list afterwards, because the printer does not push one', async () => {
+    const listFilesSpy = vi
+      .fn()
+      .mockResolvedValueOnce([file('cthulhu.goo'), file('boots.ctb')])
+      .mockResolvedValue([file('boots.ctb')]);
+    render(
+      <Files
+        listFiles={listFilesSpy}
+        deleteFiles={vi.fn().mockResolvedValue({ deleted: ['/local/cthulhu.goo'] })}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+
+    await waitFor(() => expect(screen.queryByText('cthulhu.goo')).not.toBeInTheDocument());
+    expect(screen.getByText('boots.ctb')).toBeInTheDocument();
+  });
+
+  it('reports a refusal rather than pretending the file is gone', async () => {
+    const deleteFiles = vi.fn().mockRejectedValue(new Error('cthulhu.goo is printing right now'));
+    render(
+      <Files listFiles={listFiles} deleteFiles={deleteFiles} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('printing right now');
+    expect(screen.getByText('cthulhu.goo')).toBeInTheDocument();
+  });
+
+  it('stays available while a print is running, unlike Print', async () => {
+    // Deleting some OTHER file during a print is reasonable; the server refuses
+    // only the file actually printing.
+    render(
+      <Files listFiles={listFiles} deleteFiles={vi.fn()} busy fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    expect(screen.getAllByRole('button', { name: 'Print' })[0]).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete cthulhu.goo' })).toBeEnabled();
+  });
+});
+
 describe('uploadEstimate', () => {
   const mb = (n: number) => n * 1024 * 1024;
 

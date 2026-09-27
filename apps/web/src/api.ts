@@ -97,4 +97,15 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: true }),
     }).then((r) => json(r)),
+  /**
+   * Delete files from the printer. Batched, because the printer's own command
+   * is (Cmd 259), and confirmed for the same reason stop is: there is no undo
+   * and the printer has no recycle bin. The UI asks the human first.
+   */
+  deleteFiles: (paths: string[]) =>
+    fetch('/api/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: paths, confirm: true }),
+    }).then((r) => json<{ deleted: string[]; files?: PrinterFile[] }>(r)),
 };

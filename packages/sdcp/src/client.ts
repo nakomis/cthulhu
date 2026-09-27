@@ -64,6 +64,24 @@ export class StartPrintError extends SdcpError {
   }
 }
 
+/**
+ * Cmd 259 refused. The printer answers a successful delete with Ack 0; nothing
+ * documents the other values, so the raw one is carried rather than guessed at.
+ */
+export class BatchDeleteError extends SdcpError {
+  readonly ack: unknown;
+  readonly files: string[];
+  readonly folders: string[];
+
+  constructor(ack: unknown, files: string[], folders: string[]) {
+    const targets = [...files, ...folders].join(', ');
+    super(`Printer refused to delete ${targets} (Ack ${String(ack)})`);
+    this.ack = ack;
+    this.files = files;
+    this.folders = folders;
+  }
+}
+
 /** Cmd 386 refused. `ack` is a {@link VideoAck} code. */
 export class VideoStreamError extends SdcpError {
   readonly ack: number;
@@ -395,6 +413,43 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
 
   listFiles(url = '/local'): Promise<Record<string, unknown>> {
     return this.send(Cmd.ListFiles, { Url: url });
+  }
+
+  /**
+   * Delete files, and optionally folders, from the printer's storage.
+   *
+   * The shape is NOT from the specification, which does not document Cmd 259's
+   * arguments. It is from a packet capture of ChituManager deleting a file,
+   * decoded frame by frame:
+   *
+   *     {"Cmd":259,"Data":{"FileList":["/local/cal1-7.goo"],"FolderList":[]},
+   *      "RequestID":"...","MainboardID":"...","TimeStamp":...,"From":1}
+   *
+   * answered with `{"Cmd":259,"Data":{"Ack":0}}`. An earlier attempt to find
+   * this by reading `tcpdump -A` output concluded the printer had no delete at
+   * all: client-to-server WebSocket frames are XOR-masked, as RFC 6455
+   * requires, so the command is invisible without unmasking it.
+   *
+   * Paths are absolute and storage-qualified, the same form Cmd 128 takes and
+   * that {@link listFiles} returns — `/local/x.goo`, not `x.goo`.
+   *
+   * The printer does NOT push a new file list afterwards. A caller showing a
+   * list must re-request it; ChituManager sends Cmd 258 immediately after.
+   */
+  async deleteFiles(files: string[], folders: string[] = []): Promise<void> {
+    if (files.length === 0 && folders.length === 0) {
+      throw new SdcpError('Refusing to send an empty delete');
+    }
+    const data = await this.send(Cmd.BatchDeleteFiles, {
+      FileList: files,
+      FolderList: folders,
+    });
+    // Ack lives one level down, as it does for every other command here.
+    const inner = (data.Data ?? data) as Record<string, unknown>;
+    const ack = inner.Ack;
+    if (ack !== 0 && ack !== undefined) {
+      throw new BatchDeleteError(ack, files, folders);
+    }
   }
 
   historyTaskList(): Promise<Record<string, unknown>> {
