@@ -59,6 +59,14 @@ export interface FakePrinter {
   readonly uploads: Map<string, UploadedFile>;
   /** How many distinct TCP connections have carried an upload packet. */
   uploadSockets(): number;
+  /** Paths deleted by Cmd 259 during this run, in the order asked for. */
+  readonly deleted: string[];
+  /** Upload uuids abandoned by Cmd 255. */
+  readonly terminated: string[];
+  /** Uuids of transfers that arrived but never completed. */
+  partialUploads(): string[];
+  /** Files the printer is currently holding, as Cmd 258 would list them. */
+  files(): string[];
   readonly mainboardId: string;
   readonly state: PrinterState;
   /** Advance the simulation manually; tests use this instead of waiting. */
@@ -105,6 +113,10 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   // whole file arrive on one socket" is a correctness property, not a detail.
   let uploadSocketCount = 0;
   const SEEN = Symbol('cthulhu.uploadSocketSeen');
+  /** Paths deleted by Cmd 259, in order, so tests can assert on the request. */
+  const deleted: string[] = [];
+  /** Uuids abandoned by Cmd 255. */
+  const terminated: string[] = [];
 
   const http: HttpServer = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -485,6 +497,68 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           return;
         }
 
+        case Cmd.TerminateFileTransfer: {
+          // Cmd 255. Field names are UNVERIFIED against the real machine — see
+          // SdcpClient.terminateFileTransfer. This fake accepts the shape the
+          // client sends so the cancel path is exercised end to end, and drops
+          // the partial transfer, which is the behaviour that matters: a
+          // cancelled upload must not leave a half file behind.
+          const uuid = typeof payload.Uuid === 'string' ? payload.Uuid : '';
+          const known = partials.has(uuid);
+          if (known) {
+            terminated.push(uuid);
+            partials.delete(uuid);
+          }
+          // Ack 0 even for an unknown uuid: the client cancels without knowing
+          // whether any packet reached the printer, and a cancel of nothing has
+          // achieved what was asked.
+          ws.send(JSON.stringify(ackFrame(requestId, cmd, 0)));
+          return;
+        }
+
+        case Cmd.BatchDeleteFiles: {
+          // Shape taken from a ChituManager capture, not the spec, which does
+          // not document this command's arguments: FileList and FolderList of
+          // absolute storage-qualified paths, answered with a bare Ack.
+          //
+          // This fake is deliberately STRICTER than the real printer about one
+          // thing: it refuses a path that is not under /local, because a bare
+          // filename silently deleting nothing is the failure a client is most
+          // likely to ship. The real machine's behaviour there is unknown.
+          const fileList = Array.isArray(payload.FileList)
+            ? (payload.FileList as unknown[]).map(String)
+            : [];
+          const folderList = Array.isArray(payload.FolderList)
+            ? (payload.FolderList as unknown[]).map(String)
+            : [];
+
+          const unqualified = [...fileList, ...folderList].filter(
+            (path) => !path.startsWith('/local/'),
+          );
+          if (fileList.length === 0 && folderList.length === 0) {
+            ws.send(JSON.stringify(ackFrame(requestId, cmd, -1)));
+            return;
+          }
+          if (unqualified.length > 0) {
+            ws.send(JSON.stringify(ackFrame(requestId, cmd, -1)));
+            return;
+          }
+
+          for (const path of fileList) {
+            const name = path.slice('/local/'.length);
+            knownFiles.delete(name);
+            uploads.delete(name);
+            deleted.push(path);
+          }
+          // Folders are accepted and recorded; this fake keeps no folder tree.
+          for (const path of folderList) deleted.push(path);
+
+          // No list push afterwards, matching the real printer: a client that
+          // wants a fresh listing has to ask for one with Cmd 258.
+          ws.send(JSON.stringify(ackFrame(requestId, cmd, 0)));
+          return;
+        }
+
         case Cmd.SetVideoStream: {
           const enable = payload.Enable === 1 || payload.Enable === true;
           // Per the official spec, Cmd 386 answers with a VideoUrl and its own
@@ -552,6 +626,10 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
     wsPort,
     uploads,
     uploadSockets: () => uploadSocketCount,
+    deleted,
+    terminated,
+    partialUploads: () => [...partials.keys()],
+    files: () => [...knownFiles],
     mainboardId,
     state,
     tick: (deltaMs: number) => state.tick(deltaMs),

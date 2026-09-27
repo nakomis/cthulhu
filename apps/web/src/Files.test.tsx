@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { Files, uploadEstimate } from './Files.js';
+import type { UploadProgress } from './api.js';
+import { Files, formatMegabytes, formatRemaining, uploadEstimate } from './Files.js';
 
 const file = (name: string, storage: 'local' | 'usb' = 'local', folder = '') => ({
   path: storage === 'local' ? `/local/${name}` : `/usb/${folder ? `${folder}/` : ''}${name}`,
@@ -121,6 +122,97 @@ describe('Files', () => {
   });
 });
 
+describe('Files: deleting', () => {
+  it('needs a second press before it deletes anything', async () => {
+    // Irreversible, and the printer has no recycle bin. One press arms it.
+    const deleteFiles = vi.fn().mockResolvedValue({ deleted: ['/local/cthulhu.goo'] });
+    render(
+      <Files listFiles={listFiles} deleteFiles={deleteFiles} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    expect(deleteFiles).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+    await waitFor(() => expect(deleteFiles).toHaveBeenCalledWith(['/local/cthulhu.goo']));
+    expect(await screen.findByRole('status')).toHaveTextContent('Deleted cthulhu.goo');
+  });
+
+  it('can be backed out of, leaving the file alone', async () => {
+    const deleteFiles = vi.fn();
+    render(
+      <Files listFiles={listFiles} deleteFiles={deleteFiles} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(deleteFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Delete cthulhu.goo' })).toBeInTheDocument();
+  });
+
+  it('arms only the file that was pressed', async () => {
+    // Two files, one armed: the other must still show its own Delete, or a
+    // confirmation press could bin the wrong file.
+    render(<Files listFiles={listFiles} deleteFiles={vi.fn()} fileMeta={async () => undefined} />);
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+
+    expect(screen.getAllByRole('button', { name: 'Delete for good' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Delete boots.ctb' })).toBeInTheDocument();
+  });
+
+  it('refreshes the list afterwards, because the printer does not push one', async () => {
+    const listFilesSpy = vi
+      .fn()
+      .mockResolvedValueOnce([file('cthulhu.goo'), file('boots.ctb')])
+      .mockResolvedValue([file('boots.ctb')]);
+    render(
+      <Files
+        listFiles={listFilesSpy}
+        deleteFiles={vi.fn().mockResolvedValue({ deleted: ['/local/cthulhu.goo'] })}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+
+    await waitFor(() => expect(screen.queryByText('cthulhu.goo')).not.toBeInTheDocument());
+    expect(screen.getByText('boots.ctb')).toBeInTheDocument();
+  });
+
+  it('reports a refusal rather than pretending the file is gone', async () => {
+    const deleteFiles = vi.fn().mockRejectedValue(new Error('cthulhu.goo is printing right now'));
+    render(
+      <Files listFiles={listFiles} deleteFiles={deleteFiles} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cthulhu.goo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete for good' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('printing right now');
+    expect(screen.getByText('cthulhu.goo')).toBeInTheDocument();
+  });
+
+  it('stays available while a print is running, unlike Print', async () => {
+    // Deleting some OTHER file during a print is reasonable; the server refuses
+    // only the file actually printing.
+    render(
+      <Files listFiles={listFiles} deleteFiles={vi.fn()} busy fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+
+    expect(screen.getAllByRole('button', { name: 'Print' })[0]).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete cthulhu.goo' })).toBeEnabled();
+  });
+});
+
 describe('uploadEstimate', () => {
   const mb = (n: number) => n * 1024 * 1024;
 
@@ -134,5 +226,171 @@ describe('uploadEstimate', () => {
 
   it('rounds middling uploads to a minute', () => {
     expect(uploadEstimate(mb(60))).toBe(' (about a minute)');
+  });
+});
+
+describe('Files: cancelling an upload', () => {
+  const slowUpload = () => new Promise<never>(() => {});
+
+  it('offers Cancel while an upload is running, and not before', async () => {
+    render(
+      <Files listFiles={listFiles} uploadFile={slowUpload} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+    expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument();
+
+    const input = screen.getByTestId('file-input');
+    await userEvent.upload(input as HTMLInputElement, new File(['x'], 'big.goo'));
+
+    expect(await screen.findByRole('button', { name: 'Cancel upload' })).toBeInTheDocument();
+  });
+
+  it('cancels, and says so rather than reporting the upload as failed', async () => {
+    // The upload's own rejection is a 499 the user asked for. Showing it would
+    // make a deliberate cancel read as a transfer error.
+    const cancelUpload = vi.fn().mockResolvedValue({ cancelled: 'big.goo', printerNotified: true });
+    render(
+      <Files
+        listFiles={listFiles}
+        uploadFile={slowUpload}
+        cancelUpload={cancelUpload}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+    await userEvent.upload(
+      screen.getByTestId('file-input') as HTMLInputElement,
+      new File(['x'], 'big.goo'),
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel upload' }));
+
+    await waitFor(() => expect(cancelUpload).toHaveBeenCalled());
+    expect(await screen.findByRole('status')).toHaveTextContent('Cancelled big.goo');
+  });
+
+  it('warns when the printer could not be told, so a partial may remain', async () => {
+    const cancelUpload = vi
+      .fn()
+      .mockResolvedValue({ cancelled: 'big.goo', printerNotified: false });
+    render(
+      <Files
+        listFiles={listFiles}
+        uploadFile={slowUpload}
+        cancelUpload={cancelUpload}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+    await userEvent.upload(
+      screen.getByTestId('file-input') as HTMLInputElement,
+      new File(['x'], 'big.goo'),
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel upload' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('partial file may remain');
+  });
+});
+
+describe('Files: upload progress', () => {
+  const slowUpload = () => new Promise<never>(() => {});
+  const render_ = (uploadProgress: () => Promise<UploadProgress | undefined>) =>
+    render(
+      <Files
+        listFiles={listFiles}
+        uploadFile={slowUpload}
+        uploadProgress={uploadProgress}
+        progressIntervalMs={10}
+        fileMeta={async () => undefined}
+      />,
+    );
+  const startUpload = async () =>
+    userEvent.upload(
+      screen.getByTestId('file-input') as HTMLInputElement,
+      new File(['x'], 'calhead.goo'),
+    );
+
+  it('shows a bar with the percentage the SERVER reports', async () => {
+    // Not the browser's own request progress, which finished seconds ago: the
+    // minutes that follow are cthulhu feeding the printer.
+    render_(async () => ({
+      filename: 'calhead.goo',
+      sent: 100 * 1024 * 1024,
+      total: 351 * 1024 * 1024,
+      percent: 28,
+      elapsedMs: 40_000,
+      remainingMs: 100_000,
+    }));
+    await screen.findByText('cthulhu.goo');
+    await startUpload();
+
+    const bar = await screen.findByRole('progressbar', { name: 'Uploading calhead.goo' });
+    expect(bar).toHaveAttribute('aria-valuenow', '28');
+    // textContent rather than findByText: the line is several JSX children, so
+    // the bytes and the ETA are separate text nodes.
+    await waitFor(() => expect(bar.parentElement?.textContent).toContain('28% · 100 MB of 351 MB'));
+    expect(bar.parentElement?.textContent).toContain('about 2 m left');
+  });
+
+  it('shows no ETA until the server offers one', async () => {
+    // The server withholds it until two packets have landed, because the first
+    // carries the whole cost of opening the connection (~7s on this printer).
+    render_(async () => ({
+      filename: 'calhead.goo',
+      sent: 1024 * 1024,
+      total: 351 * 1024 * 1024,
+      percent: 0,
+      elapsedMs: 7000,
+    }));
+    await screen.findByText('cthulhu.goo');
+    await startUpload();
+
+    const bar = await screen.findByRole('progressbar');
+    expect(bar.parentElement?.textContent).not.toContain('left');
+  });
+
+  it('shows no bar at all when no upload is running', async () => {
+    render_(async () => undefined);
+    await screen.findByText('cthulhu.goo');
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+
+  it('survives a failed poll without claiming the upload broke', async () => {
+    const poll = vi
+      .fn<() => Promise<UploadProgress | undefined>>()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({
+        filename: 'calhead.goo',
+        sent: 1024,
+        total: 2048,
+        percent: 50,
+        elapsedMs: 100,
+        remainingMs: 100,
+      });
+    render_(poll);
+    await screen.findByText('cthulhu.goo');
+    await startUpload();
+
+    expect(await screen.findByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
+    expect(screen.getByRole('status')).toHaveTextContent(/Uploading calhead.goo/);
+  });
+});
+
+describe('formatRemaining', () => {
+  it('avoids saying "0 m left" in the last half-minute', () => {
+    expect(formatRemaining(20_000)).toBe('less than a minute left');
+    expect(formatRemaining(44_000)).toBe('less than a minute left');
+  });
+
+  it('rounds to minutes above that', () => {
+    expect(formatRemaining(120_000)).toBe('about 2 m left');
+    expect(formatRemaining(3_600_000)).toBe('about 1 h 00 m left');
+  });
+});
+
+describe('formatMegabytes', () => {
+  it('keeps a decimal below 100 MB and drops it above', () => {
+    expect(formatMegabytes(1024 * 1024)).toBe('1.0 MB');
+    expect(formatMegabytes(351 * 1024 * 1024)).toBe('351 MB');
   });
 });

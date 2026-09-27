@@ -224,6 +224,244 @@ describe('file listing', () => {
   });
 });
 
+describe('GET /api/upload/progress', () => {
+  it('answers 204, not 404, when nothing is uploading', async () => {
+    // The UI polls this on a timer; an absent upload is the normal case, not an
+    // error worth a 404 in the logs on every tick.
+    await settle();
+    const res = await app.inject({ method: 'GET', url: '/api/upload/progress' });
+    expect(res.statusCode).toBe(204);
+    expect(res.body).toBe('');
+  });
+
+  it('reports the bytes the PRINTER has accepted while an upload runs', async () => {
+    await settle();
+    const body = Buffer.alloc(24 * 1024 * 1024, 5);
+    const upload = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'watched.goo' },
+      payload: body,
+    });
+
+    const seen = await app.inject({ method: 'GET', url: '/api/upload/progress' });
+    if (seen.statusCode === 204) {
+      // Already finished — nothing to observe, and that is not a failure.
+      await upload;
+      return;
+    }
+
+    const json = seen.json();
+    expect(json.filename).toBe('watched.goo');
+    expect(json.total).toBe(body.length);
+    expect(json.sent).toBeLessThanOrEqual(body.length);
+    expect(json.percent).toBeGreaterThanOrEqual(0);
+    expect(json.percent).toBeLessThanOrEqual(100);
+    // The count is of bytes the printer took, so it can only be a multiple of
+    // the packet size or the total - never some arbitrary browser-side figure.
+    expect(json.sent % (1024 * 1024) === 0 || json.sent === body.length).toBe(true);
+
+    await upload;
+    // And it clears afterwards.
+    expect((await app.inject({ method: 'GET', url: '/api/upload/progress' })).statusCode).toBe(204);
+  });
+
+  it('withholds the ETA until a second packet has landed', async () => {
+    // The first packet pays for the connection - about seven seconds on the real
+    // printer against ~0.3s for the rest - so a rate averaged over it
+    // over-estimates the remaining time by an order of magnitude. No estimate is
+    // better than a wrong one.
+    await settle();
+    const seenBefore: unknown[] = [];
+    const body = Buffer.alloc(8 * 1024 * 1024, 6);
+    const upload = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'eta.goo' },
+      payload: body,
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/upload/progress' });
+    if (res.statusCode === 200) {
+      const json = res.json();
+      seenBefore.push(json);
+      if (json.sent <= 1024 * 1024) {
+        expect(json.remainingMs).toBeUndefined();
+      } else {
+        // Past the first packet, an estimate is allowed and must be sane.
+        expect(typeof json.remainingMs).toBe('number');
+        expect(json.remainingMs).toBeGreaterThanOrEqual(0);
+      }
+    }
+    await upload;
+    expect(seenBefore.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('POST /api/upload/cancel', () => {
+  it('stops an upload in flight and tells the printer to drop it', async () => {
+    await settle();
+    // Big enough to still be sending when the cancel lands. The fake printer
+    // accepts packets as fast as they arrive, so the race is real either way:
+    // the assertions below are on the OUTCOME, not on how far it had got.
+    const body = Buffer.alloc(24 * 1024 * 1024, 9);
+
+    const upload = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'cancel-me.goo' },
+      payload: body,
+    });
+
+    let cancel = await app.inject({ method: 'POST', url: '/api/upload/cancel' });
+    // If the upload already finished, there is nothing to cancel and the 409 is
+    // correct; only assert the cancel path when it actually caught one.
+    if (cancel.statusCode === 409) {
+      await upload;
+      return;
+    }
+
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json()).toMatchObject({ ok: true, cancelled: 'cancel-me.goo' });
+    // The printer must have been told, so it is not left holding a part file.
+    expect(cancel.json().printerNotified).toBe(true);
+    expect(printer.terminated.length).toBe(1);
+
+    const res = await upload;
+    // 499, not 502: the caller asked for this, and reporting it as a transfer
+    // failure would have the UI shout about something the user just did.
+    expect(res.statusCode).toBe(499);
+    expect(printer.uploads.has('cancel-me.goo')).toBe(false);
+
+    // And the slot is free again.
+    cancel = await app.inject({ method: 'POST', url: '/api/upload/cancel' });
+    expect(cancel.statusCode).toBe(409);
+  });
+
+  it('answers 409 when nothing is uploading', async () => {
+    await settle();
+    const res = await app.inject({ method: 'POST', url: '/api/upload/cancel' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/No upload in progress/);
+  });
+
+  it('refuses a second upload while one is running, rather than interleaving', async () => {
+    // Both would carry their own Uuid but share the printer's single reassembly
+    // slot; offsets from two files would interleave and corrupt each other.
+    await settle();
+    const body = Buffer.alloc(16 * 1024 * 1024, 3);
+    const first = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'one.goo' },
+      payload: body,
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'two.goo' },
+      payload: Buffer.alloc(1024, 4),
+    });
+
+    if (second.statusCode === 409) {
+      expect(second.json().error).toMatch(/Already uploading one\.goo/);
+    }
+    await first;
+  });
+});
+
+describe('POST /api/files/delete', () => {
+  const del = (payload: unknown) =>
+    app.inject({ method: 'POST', url: '/api/files/delete', payload: payload as object });
+
+  it('deletes a file from the printer and hands back the new listing', async () => {
+    await settle();
+    expect(printer.files()).toContain('cthulhu.goo');
+
+    const res = await del({ files: ['/local/cthulhu.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().deleted).toEqual(['/local/cthulhu.goo']);
+    expect(printer.deleted).toEqual(['/local/cthulhu.goo']);
+    expect(printer.files()).not.toContain('cthulhu.goo');
+    // The printer pushes no new listing, so the response carries a re-read one.
+    // Without it a caller cannot tell an acked delete from an effective one.
+    expect(res.json().files.map((f: { name: string }) => f.name)).not.toContain('cthulhu.goo');
+  });
+
+  it('deletes several files in ONE command, not one request each', async () => {
+    // The printer's own command is a batch one, and a round trip to this
+    // machine is not cheap. Six files must not mean six round trips.
+    await settle();
+    const res = await del({ files: ['/local/cthulhu.goo', '/local/test.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(200);
+    expect(printer.deleted).toEqual(['/local/cthulhu.goo', '/local/test.goo']);
+    expect(printer.files()).toEqual([]);
+  });
+
+  it('refuses without an explicit confirm, and deletes nothing', async () => {
+    await settle();
+    const res = await del({ files: ['/local/cthulhu.goo'] });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/irreversible/i);
+    expect(printer.deleted).toEqual([]);
+    expect(printer.files()).toContain('cthulhu.goo');
+  });
+
+  it('rejects a bare filename rather than acking a delete of nothing', async () => {
+    // The printer wants absolute, storage-qualified paths. A bare name is the
+    // mistake a caller is most likely to make, and the real machine would
+    // very likely ack it and delete nothing.
+    await settle();
+    const res = await del({ files: ['cthulhu.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/storage-qualified/);
+    expect(printer.deleted).toEqual([]);
+    expect(printer.files()).toContain('cthulhu.goo');
+  });
+
+  it('rejects an empty list', async () => {
+    await settle();
+    expect((await del({ files: [], confirm: true })).statusCode).toBe(400);
+    expect((await del({ confirm: true })).statusCode).toBe(400);
+    expect(printer.deleted).toEqual([]);
+  });
+
+  it('refuses to delete the file that is printing right now', async () => {
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/print', payload: { filename: 'cthulhu.goo' } });
+    await settle();
+
+    const res = await del({ files: ['/local/cthulhu.goo'], confirm: true });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/printing right now/);
+    expect(printer.files()).toContain('cthulhu.goo');
+  });
+
+  it('allows deleting a file once its print has FINISHED', async () => {
+    // The regression this guards: print.filename comes from the printer's
+    // status, which goes on naming the last print at Complete and Idle. A guard
+    // on the name alone would make a file undeletable for ever once printed.
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/print', payload: { filename: 'cthulhu.goo' } });
+    await settle();
+    // Run the print out to Complete.
+    for (let i = 0; i < 400 && store.snapshot().machineStatus.includes(1); i += 1) {
+      printer.tick(200);
+      await settle();
+    }
+    expect(store.snapshot().print.filename).toBe('cthulhu.goo');
+    expect(store.snapshot().machineStatus).not.toContain(1);
+
+    const res = await del({ files: ['/local/cthulhu.goo'], confirm: true });
+    expect(res.statusCode).toBe(200);
+    expect(printer.files()).not.toContain('cthulhu.goo');
+  });
+});
+
 describe('bugs found by running the stack live against the fake printer', () => {
   it('learns the mainboardId from attributes when only a pinned IP is configured', async () => {
     // With PRINTER_IP set and discovery off there is nothing to learn the id

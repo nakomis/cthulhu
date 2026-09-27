@@ -1,6 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import { createReadStream, statSync } from 'node:fs';
 import { type CameraProxy, parseRange } from '@cthulhu/camera';
-import { StartPrintError, UploadError, UploadRejectedError, uploadFile } from '@cthulhu/sdcp';
+import {
+  BatchDeleteError,
+  MachineStatus,
+  StartPrintError,
+  UploadError,
+  UploadRejectedError,
+  uploadFile,
+} from '@cthulhu/sdcp';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -133,6 +141,79 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     await client.stop();
     await history?.finishPrint(store.snapshot().print.taskId, 'stopped');
     return { ok: true };
+  });
+
+  /**
+   * Delete files from the printer's storage.
+   *
+   * Takes a list rather than a path parameter because the printer's own command
+   * is a batch one (Cmd 259 carries FileList and FolderList), and because
+   * deleting six files one request at a time would mean six round trips over a
+   * link where a round trip is not cheap.
+   *
+   * Like /api/control/stop, this requires an explicit confirm: deletion is
+   * irreversible and the printer has no recycle bin.
+   */
+  app.post('/api/files/delete', async (request, reply) => {
+    const body = (request.body ?? {}) as { files?: unknown; confirm?: unknown };
+    if (body.confirm !== true) {
+      return reply.code(400).send({
+        error: 'Deleting is irreversible. Send {"confirm": true} to proceed.',
+      });
+    }
+    if (!Array.isArray(body.files) || body.files.length === 0) {
+      return reply.code(400).send({ error: 'files must be a non-empty array of paths' });
+    }
+    const files = body.files.map(String);
+    // Absolute and storage-qualified, as the printer expects and as
+    // /api/files reports. A bare name would delete nothing and still ack.
+    const bad = files.filter((path) => !/^\/(local|usb)\//.test(path));
+    if (bad.length > 0) {
+      return reply.code(400).send({
+        error: `Paths must be absolute and storage-qualified, e.g. /local/part.goo — got: ${bad.join(', ')}`,
+      });
+    }
+
+    const client = requireClient(reply);
+    if (!client) return;
+
+    // Refusing to delete the file being printed. The printer might well allow
+    // it; losing a running job to a mis-click is not worth finding out.
+    //
+    // print.filename alone is NOT enough to decide that: it comes straight from
+    // the printer's status, which keeps showing the LAST print's name at
+    // Complete, Stopped and Idle. Guarding on the name by itself would make a
+    // file undeletable for ever once it had been printed. The machine has to
+    // actually be printing.
+    const snapshot = store.snapshot();
+    const busy = snapshot.machineStatus.includes(MachineStatus.Printing);
+    const current = busy ? snapshot.print.filename : undefined;
+    if (current) {
+      const clash = files.filter((path) => path === current || path.endsWith(`/${current}`));
+      if (clash.length > 0) {
+        return reply
+          .code(409)
+          .send({ error: `${current} is printing right now; stop the print first` });
+      }
+    }
+
+    try {
+      await client.deleteFiles(files);
+    } catch (err) {
+      if (err instanceof BatchDeleteError) {
+        return reply.code(502).send({ error: err.message, ack: err.ack });
+      }
+      throw err;
+    }
+
+    // The printer pushes no new listing, so re-read it here and hand it back:
+    // it saves the caller a second request, and it is the only proof the
+    // delete actually took effect rather than merely being acked.
+    try {
+      return { ok: true, deleted: files, files: await listPrintableFiles(client) };
+    } catch {
+      return { ok: true, deleted: files };
+    }
   });
 
   app.post('/api/print', async (request, reply) => {
@@ -303,6 +384,31 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       .send(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]));
   });
 
+  /**
+   * The upload currently in progress, if any.
+   *
+   * Tracked so it can be cancelled from another request: an upload of a few
+   * hundred megabytes holds its connection for minutes, and without this the
+   * only way to stop one was to restart cthulhu.
+   *
+   * Exactly one at a time. The printer reassembles a transfer by offset under a
+   * single Uuid, so two concurrent uploads would interleave and corrupt each
+   * other — which is worth a 409 rather than a race.
+   */
+  interface InflightUpload {
+    uuid: string;
+    filename: string;
+    controller: AbortController;
+    startedAt: number;
+    /** Bytes the printer has accepted. */
+    sent: number;
+    total: number;
+    /** When the FIRST packet was accepted, and how big it was. */
+    firstPacketAt?: number;
+    firstPacketBytes?: number;
+  }
+  let inflight: InflightUpload | undefined;
+
   app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {
     const filename = request.headers['x-filename'];
     if (typeof filename !== 'string' || filename.length === 0) {
@@ -326,21 +432,149 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const client = printer?.client;
     if (!client) return reply.code(503).send({ error: 'Not connected to the printer' });
 
+    if (inflight) {
+      return reply.code(409).send({
+        error: `Already uploading ${inflight.filename}. Cancel it first, or wait.`,
+      });
+    }
+
+    // Generated HERE rather than left to uploadFile, because cancelling needs
+    // it: Cmd 255 identifies a transfer by Uuid, so it has to be known before
+    // the upload starts, not returned when it ends.
+    const uuid = randomUUID().replace(/-/g, '');
+    const controller = new AbortController();
+    const tracked: InflightUpload = {
+      uuid,
+      filename,
+      controller,
+      startedAt: Date.now(),
+      sent: 0,
+      total: body.length,
+    };
+    inflight = tracked;
+
     try {
       const result = await uploadFile({
         address,
         filename,
         data: body,
+        uuid,
+        signal: controller.signal,
+        // Progress is counted here rather than guessed from elapsed time: the
+        // first packet costs far more than the rest, because it pays for the
+        // connection, so a linear extrapolation from the start is badly wrong.
+        onProgress: (sent) => {
+          if (tracked.firstPacketAt === undefined) {
+            tracked.firstPacketAt = Date.now();
+            tracked.firstPacketBytes = sent;
+          }
+          tracked.sent = sent;
+        },
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
       const path = await client.confirmUploaded(filename);
       return { ...result, path };
     } catch (err) {
+      // A cancelled upload is not a failure to report as one: the caller asked
+      // for it and already has its 200 from /api/upload/cancel.
+      if (controller.signal.aborted) {
+        return reply.code(499).send({ error: `Upload of ${filename} cancelled` });
+      }
       if (err instanceof UploadError || err instanceof UploadRejectedError) {
         return reply.code(502).send({ error: err.message });
       }
       throw err;
+    } finally {
+      inflight = undefined;
     }
+  });
+
+  /**
+   * How far the upload in progress has got.
+   *
+   * Polled by the UI rather than measured in the browser. A browser can only
+   * see its own request body reaching cthulhu, which is local and near-instant:
+   * XMLHttpRequest's upload progress would read 100% within a second and then
+   * sit there for minutes. The slow leg is cthulhu to the printer, and only the
+   * server can see it.
+   *
+   * 204 rather than 404 when nothing is uploading: the UI polls this on a timer
+   * and an absent upload is the normal case, not an error worth logging.
+   */
+  app.get('/api/upload/progress', async (_request, reply) => {
+    const current = inflight;
+    if (!current) return reply.code(204).send();
+
+    const now = Date.now();
+    const elapsedMs = now - current.startedAt;
+
+    // Measured from what has actually been sent, NOT from a per-megabyte
+    // constant. The constant in the UI came from a different, faster client and
+    // was optimistic by an order of magnitude, and the real rate varies with the
+    // link, which on this printer is wireless and sometimes degraded.
+    //
+    // The rate is taken from the SECOND packet onwards. The first one carries
+    // the entire cost of opening the connection - about seven seconds on this
+    // printer, against ~0.3s for a packet on an established one - so a rate
+    // averaged over it over-estimates the remaining time by an order of
+    // magnitude on a long file. No estimate at all until two have landed:
+    // a wrong ETA is worse than none.
+    const sinceFirst = current.sent - (current.firstPacketBytes ?? 0);
+    const msSinceFirst = current.firstPacketAt ? now - current.firstPacketAt : 0;
+    const remainingMs =
+      sinceFirst > 0 && msSinceFirst > 0
+        ? Math.round(((current.total - current.sent) * msSinceFirst) / sinceFirst)
+        : undefined;
+
+    return {
+      filename: current.filename,
+      sent: current.sent,
+      total: current.total,
+      percent: current.total > 0 ? Math.round((current.sent / current.total) * 100) : 0,
+      elapsedMs,
+      ...(remainingMs !== undefined ? { remainingMs } : {}),
+    };
+  });
+
+  /**
+   * Cancel the upload in progress.
+   *
+   * Two things happen, in this order, and they are independent:
+   *
+   *  1. We stop sending. This is the part that always works and the part that
+   *     actually frees the link.
+   *  2. The printer is asked to discard the partial file (Cmd 255). This is
+   *     best-effort: the command's argument names are taken from the spec and
+   *     have never been seen on the wire here, so a refusal is reported in the
+   *     response rather than failing the cancel.
+   */
+  app.post('/api/upload/cancel', async (_request, reply) => {
+    const current = inflight;
+    if (!current) return reply.code(409).send({ error: 'No upload in progress' });
+
+    current.controller.abort(new Error('Cancelled by request'));
+
+    let printerNotified = false;
+    let printerError: string | undefined;
+    const client = printer?.client;
+    if (client) {
+      try {
+        await client.terminateFileTransfer(current.uuid, current.filename);
+        printerNotified = true;
+      } catch (err) {
+        printerError = err instanceof Error ? err.message : String(err);
+      }
+    } else {
+      printerError = 'Not connected to the printer';
+    }
+
+    return {
+      ok: true,
+      cancelled: current.filename,
+      /** False means the printer may still be holding a partial file. */
+      printerNotified,
+      ...(printerError ? { printerError } : {}),
+    };
   });
 
   if (camera) {
