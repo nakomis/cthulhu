@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createReadStream, statSync } from 'node:fs';
 import { type CameraProxy, parseRange } from '@cthulhu/camera';
 import {
@@ -383,6 +384,21 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       .send(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]));
   });
 
+  /**
+   * The upload currently in progress, if any.
+   *
+   * Tracked so it can be cancelled from another request: an upload of a few
+   * hundred megabytes holds its connection for minutes, and without this the
+   * only way to stop one was to restart cthulhu.
+   *
+   * Exactly one at a time. The printer reassembles a transfer by offset under a
+   * single Uuid, so two concurrent uploads would interleave and corrupt each
+   * other — which is worth a 409 rather than a race.
+   */
+  let inflight:
+    | { uuid: string; filename: string; controller: AbortController; startedAt: number }
+    | undefined;
+
   app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {
     const filename = request.headers['x-filename'];
     if (typeof filename !== 'string' || filename.length === 0) {
@@ -406,21 +422,84 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const client = printer?.client;
     if (!client) return reply.code(503).send({ error: 'Not connected to the printer' });
 
+    if (inflight) {
+      return reply.code(409).send({
+        error: `Already uploading ${inflight.filename}. Cancel it first, or wait.`,
+      });
+    }
+
+    // Generated HERE rather than left to uploadFile, because cancelling needs
+    // it: Cmd 255 identifies a transfer by Uuid, so it has to be known before
+    // the upload starts, not returned when it ends.
+    const uuid = randomUUID().replace(/-/g, '');
+    const controller = new AbortController();
+    inflight = { uuid, filename, controller, startedAt: Date.now() };
+
     try {
       const result = await uploadFile({
         address,
         filename,
         data: body,
+        uuid,
+        signal: controller.signal,
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
       const path = await client.confirmUploaded(filename);
       return { ...result, path };
     } catch (err) {
+      // A cancelled upload is not a failure to report as one: the caller asked
+      // for it and already has its 200 from /api/upload/cancel.
+      if (controller.signal.aborted) {
+        return reply.code(499).send({ error: `Upload of ${filename} cancelled` });
+      }
       if (err instanceof UploadError || err instanceof UploadRejectedError) {
         return reply.code(502).send({ error: err.message });
       }
       throw err;
+    } finally {
+      inflight = undefined;
     }
+  });
+
+  /**
+   * Cancel the upload in progress.
+   *
+   * Two things happen, in this order, and they are independent:
+   *
+   *  1. We stop sending. This is the part that always works and the part that
+   *     actually frees the link.
+   *  2. The printer is asked to discard the partial file (Cmd 255). This is
+   *     best-effort: the command's argument names are taken from the spec and
+   *     have never been seen on the wire here, so a refusal is reported in the
+   *     response rather than failing the cancel.
+   */
+  app.post('/api/upload/cancel', async (_request, reply) => {
+    const current = inflight;
+    if (!current) return reply.code(409).send({ error: 'No upload in progress' });
+
+    current.controller.abort(new Error('Cancelled by request'));
+
+    let printerNotified = false;
+    let printerError: string | undefined;
+    const client = printer?.client;
+    if (client) {
+      try {
+        await client.terminateFileTransfer(current.uuid, current.filename);
+        printerNotified = true;
+      } catch (err) {
+        printerError = err instanceof Error ? err.message : String(err);
+      }
+    } else {
+      printerError = 'Not connected to the printer';
+    }
+
+    return {
+      ok: true,
+      cancelled: current.filename,
+      /** False means the printer may still be holding a partial file. */
+      printerNotified,
+      ...(printerError ? { printerError } : {}),
+    };
   });
 
   if (camera) {

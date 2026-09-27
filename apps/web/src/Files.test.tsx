@@ -227,3 +227,66 @@ describe('uploadEstimate', () => {
     expect(uploadEstimate(mb(60))).toBe(' (about a minute)');
   });
 });
+
+describe('Files: cancelling an upload', () => {
+  const slowUpload = () => new Promise<never>(() => {});
+
+  it('offers Cancel while an upload is running, and not before', async () => {
+    render(
+      <Files listFiles={listFiles} uploadFile={slowUpload} fileMeta={async () => undefined} />,
+    );
+    await screen.findByText('cthulhu.goo');
+    expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument();
+
+    const input = screen.getByTestId('file-input');
+    await userEvent.upload(input as HTMLInputElement, new File(['x'], 'big.goo'));
+
+    expect(await screen.findByRole('button', { name: 'Cancel upload' })).toBeInTheDocument();
+  });
+
+  it('cancels, and says so rather than reporting the upload as failed', async () => {
+    // The upload's own rejection is a 499 the user asked for. Showing it would
+    // make a deliberate cancel read as a transfer error.
+    const cancelUpload = vi.fn().mockResolvedValue({ cancelled: 'big.goo', printerNotified: true });
+    render(
+      <Files
+        listFiles={listFiles}
+        uploadFile={slowUpload}
+        cancelUpload={cancelUpload}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+    await userEvent.upload(
+      screen.getByTestId('file-input') as HTMLInputElement,
+      new File(['x'], 'big.goo'),
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel upload' }));
+
+    await waitFor(() => expect(cancelUpload).toHaveBeenCalled());
+    expect(await screen.findByRole('status')).toHaveTextContent('Cancelled big.goo');
+  });
+
+  it('warns when the printer could not be told, so a partial may remain', async () => {
+    const cancelUpload = vi
+      .fn()
+      .mockResolvedValue({ cancelled: 'big.goo', printerNotified: false });
+    render(
+      <Files
+        listFiles={listFiles}
+        uploadFile={slowUpload}
+        cancelUpload={cancelUpload}
+        fileMeta={async () => undefined}
+      />,
+    );
+    await screen.findByText('cthulhu.goo');
+    await userEvent.upload(
+      screen.getByTestId('file-input') as HTMLInputElement,
+      new File(['x'], 'big.goo'),
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel upload' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('partial file may remain');
+  });
+});

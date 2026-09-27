@@ -82,6 +82,24 @@ export class BatchDeleteError extends SdcpError {
   }
 }
 
+/**
+ * Cmd 255 refused, or answered in a shape we did not expect.
+ *
+ * Advisory by design. A caller cancelling an upload has already stopped
+ * sending, which is the part that matters; this only means the printer may be
+ * left holding a partial file until something overwrites or deletes it.
+ */
+export class TerminateTransferError extends SdcpError {
+  readonly ack: unknown;
+
+  constructor(ack: unknown, uuid: string, filename: string) {
+    super(
+      `Printer refused to abandon the transfer of ${filename} (uuid ${uuid}, Ack ${String(ack)})`,
+    );
+    this.ack = ack;
+  }
+}
+
 /** Cmd 386 refused. `ack` is a {@link VideoAck} code. */
 export class VideoStreamError extends SdcpError {
   readonly ack: number;
@@ -413,6 +431,52 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
 
   listFiles(url = '/local'): Promise<Record<string, unknown>> {
     return this.send(Cmd.ListFiles, { Url: url });
+  }
+
+  /**
+   * Abandon an upload that is part-way through, so the printer discards the
+   * partial file instead of keeping a half-written one.
+   *
+   * `uuid` is the one every packet of that upload carried — the printer keys
+   * its reassembly on it, which is why it, and not the filename, is what
+   * identifies the transfer.
+   *
+   * ## BOTH ARGUMENTS ARE MANDATORY, AND NOT MERELY FOR TIDINESS
+   *
+   * Verified against a Mars 5 Ultra on firmware V1.5.0 by sending Cmd 255 five
+   * ways during a live, incomplete transfer:
+   *
+   *     {"Uuid": u, "FileName": n}  ->  {"Ack":0}
+   *     {"Uuid": u}                 ->  no response, socket reset, and the
+   *                                     printer's WHOLE SDCP service died
+   *
+   * After the second, TCP 3030, RTSP 554 and UDP discovery all stopped
+   * answering while the machine still replied to ping. It needed a power cycle.
+   * So a missing FileName is not an error the printer reports — it is a
+   * firmware crash, and the guard below is the only thing standing between a
+   * caller's undefined and a dead printer. Do not relax it, and do not "clean
+   * up" the payload by dropping a field the printer appears not to need.
+   *
+   * The field names themselves are the specification's, now confirmed on the
+   * wire by that Ack 0.
+   */
+  async terminateFileTransfer(uuid: string, filename: string): Promise<void> {
+    // See above: an empty or missing field here crashes the printer outright.
+    if (!uuid || !filename) {
+      throw new SdcpError(
+        'terminateFileTransfer needs both a uuid and a filename: omitting either ' +
+          "crashes the printer's SDCP service outright (firmware V1.5.0)",
+      );
+    }
+    const data = await this.send(Cmd.TerminateFileTransfer, {
+      Uuid: uuid,
+      FileName: filename,
+    });
+    const inner = (data.Data ?? data) as Record<string, unknown>;
+    const ack = inner.Ack;
+    if (ack !== 0 && ack !== undefined) {
+      throw new TerminateTransferError(ack, uuid, filename);
+    }
   }
 
   /**

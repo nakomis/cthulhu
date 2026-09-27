@@ -7,6 +7,7 @@ export interface FilesProps {
   uploadFile?: (file: File) => Promise<unknown>;
   startPrint?: (filename: string) => Promise<unknown>;
   deleteFiles?: (paths: string[]) => Promise<unknown>;
+  cancelUpload?: () => Promise<unknown>;
   fileMeta?: (path: string) => Promise<FileMeta | undefined>;
   onChanged?: () => void;
   /** Whether a print is already running; starting another would be refused. */
@@ -18,6 +19,7 @@ export function Files({
   uploadFile = api.upload,
   startPrint = api.startPrint,
   deleteFiles = api.deleteFiles,
+  cancelUpload = api.cancelUpload,
   fileMeta = api.fileMeta,
   onChanged,
   busy = false,
@@ -32,6 +34,9 @@ export function Files({
    * tests can only reach by stubbing a global.
    */
   const [confirming, setConfirming] = useState<string | undefined>();
+  /** True only while an upload is running, so Cancel is offered then and not
+   *  during a delete, which is far too quick to cancel usefully. */
+  const [uploading, setUploading] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -47,8 +52,28 @@ export function Files({
     void refresh();
   }, [refresh]);
 
+  const onCancelUpload = async () => {
+    setMessage('Cancelling…');
+    try {
+      const res = (await cancelUpload()) as
+        | { cancelled?: string; printerNotified?: boolean }
+        | undefined;
+      const name = res?.cancelled ?? 'the upload';
+      // Worth saying when the printer was not told: it may be left holding a
+      // partial file, which the next upload of that name will overwrite.
+      setMessage(
+        res?.printerNotified === false
+          ? `Cancelled ${name} — the printer was not told, so a partial file may remain`
+          : `Cancelled ${name}`,
+      );
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const onUpload = async (file: File) => {
     setWorking(true);
+    setUploading(true);
     // Over the printer's WiFi an upload runs at roughly 100 KB/s: 13 MB took
     // two and a half minutes, with nothing on screen to say it was happening.
     setMessage(`Uploading ${file.name}${uploadEstimate(file.size)}…`);
@@ -57,9 +82,18 @@ export function Files({
       setMessage(`Uploaded ${file.name}`);
       await refresh();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
+      // A cancel has already put its own message up; do not overwrite it with
+      // the upload's rejection, which reads as a failure the user did not cause.
+      setMessage((current) =>
+        current?.startsWith('Cancelled')
+          ? current
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
     } finally {
       setWorking(false);
+      setUploading(false);
     }
   };
 
@@ -120,9 +154,21 @@ export function Files({
       </div>
 
       {message ? (
-        <p role="status" className="mt-2 text-sm text-slate-300">
-          {message}
-        </p>
+        <div className="mt-2 flex items-center gap-3">
+          <p role="status" className="text-sm text-slate-300">
+            {message}
+          </p>
+          {uploading ? (
+            <button
+              type="button"
+              aria-label="Cancel upload"
+              onClick={() => void onCancelUpload()}
+              className="shrink-0 rounded border border-slate-600 px-2 py-0.5 text-xs text-slate-400"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
       ) : null}
 
       {files.length === 0 ? (

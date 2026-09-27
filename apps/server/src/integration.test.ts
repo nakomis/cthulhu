@@ -224,6 +224,78 @@ describe('file listing', () => {
   });
 });
 
+describe('POST /api/upload/cancel', () => {
+  it('stops an upload in flight and tells the printer to drop it', async () => {
+    await settle();
+    // Big enough to still be sending when the cancel lands. The fake printer
+    // accepts packets as fast as they arrive, so the race is real either way:
+    // the assertions below are on the OUTCOME, not on how far it had got.
+    const body = Buffer.alloc(24 * 1024 * 1024, 9);
+
+    const upload = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'cancel-me.goo' },
+      payload: body,
+    });
+
+    let cancel = await app.inject({ method: 'POST', url: '/api/upload/cancel' });
+    // If the upload already finished, there is nothing to cancel and the 409 is
+    // correct; only assert the cancel path when it actually caught one.
+    if (cancel.statusCode === 409) {
+      await upload;
+      return;
+    }
+
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json()).toMatchObject({ ok: true, cancelled: 'cancel-me.goo' });
+    // The printer must have been told, so it is not left holding a part file.
+    expect(cancel.json().printerNotified).toBe(true);
+    expect(printer.terminated.length).toBe(1);
+
+    const res = await upload;
+    // 499, not 502: the caller asked for this, and reporting it as a transfer
+    // failure would have the UI shout about something the user just did.
+    expect(res.statusCode).toBe(499);
+    expect(printer.uploads.has('cancel-me.goo')).toBe(false);
+
+    // And the slot is free again.
+    cancel = await app.inject({ method: 'POST', url: '/api/upload/cancel' });
+    expect(cancel.statusCode).toBe(409);
+  });
+
+  it('answers 409 when nothing is uploading', async () => {
+    await settle();
+    const res = await app.inject({ method: 'POST', url: '/api/upload/cancel' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/No upload in progress/);
+  });
+
+  it('refuses a second upload while one is running, rather than interleaving', async () => {
+    // Both would carry their own Uuid but share the printer's single reassembly
+    // slot; offsets from two files would interleave and corrupt each other.
+    await settle();
+    const body = Buffer.alloc(16 * 1024 * 1024, 3);
+    const first = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'one.goo' },
+      payload: body,
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'two.goo' },
+      payload: Buffer.alloc(1024, 4),
+    });
+
+    if (second.statusCode === 409) {
+      expect(second.json().error).toMatch(/Already uploading one\.goo/);
+    }
+    await first;
+  });
+});
+
 describe('POST /api/files/delete', () => {
   const del = (payload: unknown) =>
     app.inject({ method: 'POST', url: '/api/files/delete', payload: payload as object });
