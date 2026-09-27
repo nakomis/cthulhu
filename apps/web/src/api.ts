@@ -61,6 +61,16 @@ export interface FileMeta {
   preview: boolean;
 }
 
+export interface UploadProgress {
+  filename: string;
+  sent: number;
+  total: number;
+  percent: number;
+  elapsedMs: number;
+  /** Absent until two packets have landed; see the server's reasoning. */
+  remainingMs?: number;
+}
+
 export const api = {
   fileMeta: async (path: string): Promise<FileMeta | undefined> => {
     const res = await fetch(`/api/files/meta?path=${encodeURIComponent(path)}`);
@@ -102,6 +112,20 @@ export const api = {
    * is (Cmd 259), and confirmed for the same reason stop is: there is no undo
    * and the printer has no recycle bin. The UI asks the human first.
    */
+  /**
+   * How far the upload in progress has got, or undefined when none is running.
+   *
+   * Polled rather than measured in the browser: XMLHttpRequest's upload progress
+   * only covers browser -> cthulhu, which is local and near-instant, so it would
+   * read 100% within a second and then sit there. The slow leg is cthulhu to the
+   * printer, and only the server can see it.
+   */
+  uploadProgress: async (): Promise<UploadProgress | undefined> => {
+    const res = await fetch('/api/upload/progress');
+    // 204 means nothing is uploading, which is the normal case, not an error.
+    if (res.status === 204 || !res.ok) return undefined;
+    return (await res.json()) as UploadProgress;
+  },
   /**
    * Abandon the upload in progress. Answers 200 even if the printer could not
    * be told, with printerNotified false: the local side of a cancel — stopping

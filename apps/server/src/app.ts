@@ -395,9 +395,19 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
    * single Uuid, so two concurrent uploads would interleave and corrupt each
    * other — which is worth a 409 rather than a race.
    */
-  let inflight:
-    | { uuid: string; filename: string; controller: AbortController; startedAt: number }
-    | undefined;
+  interface InflightUpload {
+    uuid: string;
+    filename: string;
+    controller: AbortController;
+    startedAt: number;
+    /** Bytes the printer has accepted. */
+    sent: number;
+    total: number;
+    /** When the FIRST packet was accepted, and how big it was. */
+    firstPacketAt?: number;
+    firstPacketBytes?: number;
+  }
+  let inflight: InflightUpload | undefined;
 
   app.post('/api/upload', { bodyLimit: config.maxUploadBytes }, async (request, reply) => {
     const filename = request.headers['x-filename'];
@@ -433,7 +443,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     // the upload starts, not returned when it ends.
     const uuid = randomUUID().replace(/-/g, '');
     const controller = new AbortController();
-    inflight = { uuid, filename, controller, startedAt: Date.now() };
+    const tracked: InflightUpload = {
+      uuid,
+      filename,
+      controller,
+      startedAt: Date.now(),
+      sent: 0,
+      total: body.length,
+    };
+    inflight = tracked;
 
     try {
       const result = await uploadFile({
@@ -442,6 +460,16 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         data: body,
         uuid,
         signal: controller.signal,
+        // Progress is counted here rather than guessed from elapsed time: the
+        // first packet costs far more than the rest, because it pays for the
+        // connection, so a linear extrapolation from the start is badly wrong.
+        onProgress: (sent) => {
+          if (tracked.firstPacketAt === undefined) {
+            tracked.firstPacketAt = Date.now();
+            tracked.firstPacketBytes = sent;
+          }
+          tracked.sent = sent;
+        },
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
       const path = await client.confirmUploaded(filename);
@@ -459,6 +487,53 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     } finally {
       inflight = undefined;
     }
+  });
+
+  /**
+   * How far the upload in progress has got.
+   *
+   * Polled by the UI rather than measured in the browser. A browser can only
+   * see its own request body reaching cthulhu, which is local and near-instant:
+   * XMLHttpRequest's upload progress would read 100% within a second and then
+   * sit there for minutes. The slow leg is cthulhu to the printer, and only the
+   * server can see it.
+   *
+   * 204 rather than 404 when nothing is uploading: the UI polls this on a timer
+   * and an absent upload is the normal case, not an error worth logging.
+   */
+  app.get('/api/upload/progress', async (_request, reply) => {
+    const current = inflight;
+    if (!current) return reply.code(204).send();
+
+    const now = Date.now();
+    const elapsedMs = now - current.startedAt;
+
+    // Measured from what has actually been sent, NOT from a per-megabyte
+    // constant. The constant in the UI came from a different, faster client and
+    // was optimistic by an order of magnitude, and the real rate varies with the
+    // link, which on this printer is wireless and sometimes degraded.
+    //
+    // The rate is taken from the SECOND packet onwards. The first one carries
+    // the entire cost of opening the connection - about seven seconds on this
+    // printer, against ~0.3s for a packet on an established one - so a rate
+    // averaged over it over-estimates the remaining time by an order of
+    // magnitude on a long file. No estimate at all until two have landed:
+    // a wrong ETA is worse than none.
+    const sinceFirst = current.sent - (current.firstPacketBytes ?? 0);
+    const msSinceFirst = current.firstPacketAt ? now - current.firstPacketAt : 0;
+    const remainingMs =
+      sinceFirst > 0 && msSinceFirst > 0
+        ? Math.round(((current.total - current.sent) * msSinceFirst) / sinceFirst)
+        : undefined;
+
+    return {
+      filename: current.filename,
+      sent: current.sent,
+      total: current.total,
+      percent: current.total > 0 ? Math.round((current.sent / current.total) * 100) : 0,
+      elapsedMs,
+      ...(remainingMs !== undefined ? { remainingMs } : {}),
+    };
   });
 
   /**

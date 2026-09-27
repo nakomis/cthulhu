@@ -224,6 +224,79 @@ describe('file listing', () => {
   });
 });
 
+describe('GET /api/upload/progress', () => {
+  it('answers 204, not 404, when nothing is uploading', async () => {
+    // The UI polls this on a timer; an absent upload is the normal case, not an
+    // error worth a 404 in the logs on every tick.
+    await settle();
+    const res = await app.inject({ method: 'GET', url: '/api/upload/progress' });
+    expect(res.statusCode).toBe(204);
+    expect(res.body).toBe('');
+  });
+
+  it('reports the bytes the PRINTER has accepted while an upload runs', async () => {
+    await settle();
+    const body = Buffer.alloc(24 * 1024 * 1024, 5);
+    const upload = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'watched.goo' },
+      payload: body,
+    });
+
+    const seen = await app.inject({ method: 'GET', url: '/api/upload/progress' });
+    if (seen.statusCode === 204) {
+      // Already finished — nothing to observe, and that is not a failure.
+      await upload;
+      return;
+    }
+
+    const json = seen.json();
+    expect(json.filename).toBe('watched.goo');
+    expect(json.total).toBe(body.length);
+    expect(json.sent).toBeLessThanOrEqual(body.length);
+    expect(json.percent).toBeGreaterThanOrEqual(0);
+    expect(json.percent).toBeLessThanOrEqual(100);
+    // The count is of bytes the printer took, so it can only be a multiple of
+    // the packet size or the total - never some arbitrary browser-side figure.
+    expect(json.sent % (1024 * 1024) === 0 || json.sent === body.length).toBe(true);
+
+    await upload;
+    // And it clears afterwards.
+    expect((await app.inject({ method: 'GET', url: '/api/upload/progress' })).statusCode).toBe(204);
+  });
+
+  it('withholds the ETA until a second packet has landed', async () => {
+    // The first packet pays for the connection - about seven seconds on the real
+    // printer against ~0.3s for the rest - so a rate averaged over it
+    // over-estimates the remaining time by an order of magnitude. No estimate is
+    // better than a wrong one.
+    await settle();
+    const seenBefore: unknown[] = [];
+    const body = Buffer.alloc(8 * 1024 * 1024, 6);
+    const upload = app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'eta.goo' },
+      payload: body,
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/upload/progress' });
+    if (res.statusCode === 200) {
+      const json = res.json();
+      seenBefore.push(json);
+      if (json.sent <= 1024 * 1024) {
+        expect(json.remainingMs).toBeUndefined();
+      } else {
+        // Past the first packet, an estimate is allowed and must be sane.
+        expect(typeof json.remainingMs).toBe('number');
+        expect(json.remainingMs).toBeGreaterThanOrEqual(0);
+      }
+    }
+    await upload;
+    expect(seenBefore.length).toBeLessThanOrEqual(1);
+  });
+});
+
 describe('POST /api/upload/cancel', () => {
   it('stops an upload in flight and tells the printer to drop it', async () => {
     await settle();

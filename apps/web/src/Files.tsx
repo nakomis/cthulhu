@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type FileMeta, type PrinterFile } from './api.js';
+import { api, type FileMeta, type PrinterFile, type UploadProgress } from './api.js';
 
 export interface FilesProps {
   /** Injected in tests. */
@@ -8,6 +8,9 @@ export interface FilesProps {
   startPrint?: (filename: string) => Promise<unknown>;
   deleteFiles?: (paths: string[]) => Promise<unknown>;
   cancelUpload?: () => Promise<unknown>;
+  uploadProgress?: () => Promise<UploadProgress | undefined>;
+  /** Poll period for upload progress. Shortened in tests. */
+  progressIntervalMs?: number;
   fileMeta?: (path: string) => Promise<FileMeta | undefined>;
   onChanged?: () => void;
   /** Whether a print is already running; starting another would be refused. */
@@ -20,6 +23,8 @@ export function Files({
   startPrint = api.startPrint,
   deleteFiles = api.deleteFiles,
   cancelUpload = api.cancelUpload,
+  uploadProgress = api.uploadProgress,
+  progressIntervalMs = 1000,
   fileMeta = api.fileMeta,
   onChanged,
   busy = false,
@@ -37,7 +42,38 @@ export function Files({
   /** True only while an upload is running, so Cancel is offered then and not
    *  during a delete, which is far too quick to cancel usefully. */
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState<UploadProgress | undefined>();
   const input = useRef<HTMLInputElement>(null);
+
+  /**
+   * Poll the server for how far the upload has got, only while one is running.
+   *
+   * The server is the only thing that can see this: the browser's own upload
+   * finished seconds ago, and the minutes that follow are cthulhu feeding the
+   * printer.
+   */
+  useEffect(() => {
+    if (!uploading) {
+      setProgress(undefined);
+      return;
+    }
+    let live = true;
+    const tick = async () => {
+      try {
+        const p = await uploadProgress();
+        if (live && p) setProgress(p);
+      } catch {
+        // A failed poll is not worth surfacing: the upload itself reports its
+        // own outcome, and a missing bar is better than a false error.
+      }
+    };
+    void tick();
+    const timer = setInterval(() => void tick(), progressIntervalMs);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [uploading, uploadProgress, progressIntervalMs]);
 
   const refresh = useCallback(async () => {
     try {
@@ -171,6 +207,8 @@ export function Files({
         </div>
       ) : null}
 
+      {uploading && progress ? <UploadBar progress={progress} /> : null}
+
       {files.length === 0 ? (
         <p className="mt-3 text-sm text-slate-500">No files on the printer.</p>
       ) : (
@@ -231,6 +269,56 @@ export function Files({
       )}
     </section>
   );
+}
+
+/**
+ * How far the upload has got, from the server's own count of accepted bytes.
+ *
+ * A progressbar role rather than a bare div, so it is announced; and the
+ * numbers are given as text too, because a bar alone cannot say "2 min left".
+ */
+function UploadBar({ progress }: { progress: UploadProgress }) {
+  const { percent, sent, total, remainingMs } = progress;
+  return (
+    <div className="mt-2">
+      <div
+        role="progressbar"
+        aria-label={`Uploading ${progress.filename}`}
+        aria-valuenow={percent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        className="h-1.5 w-full overflow-hidden rounded bg-slate-800"
+      >
+        <div
+          className="h-full rounded bg-tentacle transition-[width] duration-500"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <p className="mt-1 text-xs text-slate-500">
+        {`${percent}% · ${formatMegabytes(sent)} of ${formatMegabytes(total)}`}
+        {/* Nothing until the server has two packets to work from: it will not
+            guess, and a wrong ETA is worse than none. */}
+        {remainingMs !== undefined ? ` · ${formatRemaining(remainingMs)}` : ''}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * "about 4 min left", or "less than a minute left" near the end.
+ *
+ * formatDuration rounds to whole minutes, so the last thirty seconds of a
+ * transfer would otherwise read "0 m left".
+ */
+export function formatRemaining(remainingMs: number): string {
+  const seconds = remainingMs / 1000;
+  if (seconds < 45) return 'less than a minute left';
+  return `about ${formatDuration(seconds)} left`;
+}
+
+export function formatMegabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return mb >= 100 ? `${Math.round(mb)} MB` : `${mb.toFixed(1)} MB`;
 }
 
 /**
