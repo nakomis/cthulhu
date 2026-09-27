@@ -57,6 +57,23 @@ describe('chunked upload, per the official SDCP spec', () => {
     expect(stored?.md5).toBe(createHash('md5').update(data).digest('hex'));
   });
 
+  it('sends every packet of a file down ONE TCP connection', async () => {
+    // The reason this file uses node:http rather than fetch. A new connection
+    // to the real Mars 5 Ultra costs about SEVEN SECONDS - measured, against a
+    // ~0.3s cost for a packet on an established one - so on a 351 MB file the
+    // difference between reusing the connection and not is roughly forty
+    // minutes versus two. undici, which backs global fetch, refuses to reuse a
+    // connection to this printer because its Content-Length comes back padded
+    // with trailing spaces, and there is no dispatcher to configure on the
+    // global fetch. If anyone ever "simplifies" the transport back to fetch,
+    // nothing else in this suite would notice; this fails.
+    const data = new Uint8Array(UPLOAD_CHUNK_BYTES * 4);
+    const result = await upload(data, 'oneconn.goo');
+
+    expect(result.chunks).toBe(4);
+    expect(printer.uploadSockets()).toBe(1);
+  });
+
   it('keeps one Uuid across every packet of a file', async () => {
     const data = new Uint8Array(UPLOAD_CHUNK_BYTES * 2);
     const result = await upload(data, 'uuid.goo', { uuid: 'fixed-uuid-1234' });
@@ -86,11 +103,7 @@ describe('chunked upload, per the official SDCP spec', () => {
         uuid: 'never-seen',
         // Force a non-zero starting offset by pre-seeding nothing on the
         // printer while claiming the file is larger than we send.
-        fetchImpl: async (url, init) => {
-          const form = (init as { body: FormData }).body;
-          form.set('Offset', '999');
-          return fetch(url as string, init as RequestInit);
-        },
+        tamperFields: (fields) => fields.set('Offset', '999'),
       }),
     ).rejects.toThrow(/offset does not match/);
   });
@@ -113,10 +126,7 @@ describe('chunked upload, per the official SDCP spec', () => {
         port: printer.wsPort,
         filename: 'corrupt.goo',
         data,
-        fetchImpl: async (url, init) => {
-          (init as { body: FormData }).body.set('S-File-MD5', '0'.repeat(32));
-          return fetch(url as string, init as RequestInit);
-        },
+        tamperFields: (fields) => fields.set('S-File-MD5', '0'.repeat(32)),
       });
 
       const verdict = client.confirmUploaded('corrupt.goo', { timeoutMs: 3000, intervalMs: 50 });
@@ -137,10 +147,7 @@ describe('chunked upload, per the official SDCP spec', () => {
       port: printer.wsPort,
       filename: 'header-only.goo',
       data,
-      fetchImpl: async (url, init) => {
-        (init as { body: FormData }).body.delete('S-File-MD5');
-        return fetch(url as string, init as RequestInit);
-      },
+      tamperFields: (fields) => fields.delete('S-File-MD5'),
     });
     expect(printer.uploads.has('header-only.goo')).toBe(false);
   });
