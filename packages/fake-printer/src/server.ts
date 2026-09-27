@@ -61,6 +61,10 @@ export interface FakePrinter {
   uploadSockets(): number;
   /** Paths deleted by Cmd 259 during this run, in the order asked for. */
   readonly deleted: string[];
+  /** Upload uuids abandoned by Cmd 255. */
+  readonly terminated: string[];
+  /** Uuids of transfers that arrived but never completed. */
+  partialUploads(): string[];
   /** Files the printer is currently holding, as Cmd 258 would list them. */
   files(): string[];
   readonly mainboardId: string;
@@ -111,6 +115,8 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
   const SEEN = Symbol('cthulhu.uploadSocketSeen');
   /** Paths deleted by Cmd 259, in order, so tests can assert on the request. */
   const deleted: string[] = [];
+  /** Uuids abandoned by Cmd 255. */
+  const terminated: string[] = [];
 
   const http: HttpServer = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -491,6 +497,25 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
           return;
         }
 
+        case Cmd.TerminateFileTransfer: {
+          // Cmd 255. Field names are UNVERIFIED against the real machine — see
+          // SdcpClient.terminateFileTransfer. This fake accepts the shape the
+          // client sends so the cancel path is exercised end to end, and drops
+          // the partial transfer, which is the behaviour that matters: a
+          // cancelled upload must not leave a half file behind.
+          const uuid = typeof payload.Uuid === 'string' ? payload.Uuid : '';
+          const known = partials.has(uuid);
+          if (known) {
+            terminated.push(uuid);
+            partials.delete(uuid);
+          }
+          // Ack 0 even for an unknown uuid: the client cancels without knowing
+          // whether any packet reached the printer, and a cancel of nothing has
+          // achieved what was asked.
+          ws.send(JSON.stringify(ackFrame(requestId, cmd, 0)));
+          return;
+        }
+
         case Cmd.BatchDeleteFiles: {
           // Shape taken from a ChituManager capture, not the spec, which does
           // not document this command's arguments: FileList and FolderList of
@@ -602,6 +627,8 @@ export async function createFakePrinter(options: FakePrinterOptions = {}): Promi
     uploads,
     uploadSockets: () => uploadSocketCount,
     deleted,
+    terminated,
+    partialUploads: () => [...partials.keys()],
     files: () => [...knownFiles],
     mainboardId,
     state,

@@ -102,6 +102,15 @@ export const api = {
    * is (Cmd 259), and confirmed for the same reason stop is: there is no undo
    * and the printer has no recycle bin. The UI asks the human first.
    */
+  /**
+   * Abandon the upload in progress. Answers 200 even if the printer could not
+   * be told, with printerNotified false: the local side of a cancel — stopping
+   * sending — is the part that frees the link, and it always works.
+   */
+  cancelUpload: () =>
+    fetch('/api/upload/cancel', { method: 'POST' }).then((r) =>
+      json<{ cancelled: string; printerNotified: boolean; printerError?: string }>(r),
+    ),
   deleteFiles: (paths: string[]) =>
     fetch('/api/files/delete', {
       method: 'POST',

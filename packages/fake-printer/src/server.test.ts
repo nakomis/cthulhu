@@ -5,6 +5,8 @@ import {
   SdcpClient,
   type SocketLike,
   StartPrintError,
+  UPLOAD_CHUNK_BYTES,
+  uploadFile,
 } from '@cthulhu/sdcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
@@ -182,5 +184,61 @@ describe('unsolicited status push', () => {
     await client.startPrint('cthulhu.goo');
     await new Promise((r) => setTimeout(r, 250));
     expect(seen.length).toBeGreaterThan(1);
+  });
+});
+
+describe('Cmd 255, terminating a file transfer', () => {
+  it('REFUSES to send without a filename, because that crashes a real printer', async () => {
+    // Not a validation nicety. Sending Cmd 255 with Uuid alone to a Mars 5
+    // Ultra on firmware V1.5.0 produced no response, reset the WebSocket, and
+    // took the printer's whole SDCP service down: TCP 3030, RTSP 554 and UDP
+    // discovery all stopped answering while it still replied to ping. It needed
+    // a power cycle. The guard in SdcpClient is the only thing between a
+    // caller's undefined and a dead printer, so it is tested here rather than
+    // left to a comment.
+    await expect(client.terminateFileTransfer('some-uuid', '')).rejects.toThrow(/both a uuid/);
+    await expect(client.terminateFileTransfer('', 'part.goo')).rejects.toThrow(/both a uuid/);
+    // Nothing reached the printer at all.
+    expect(printer.terminated).toEqual([]);
+  });
+
+  it('abandons a transfer that is part-way through', async () => {
+    // The fake tracks partial transfers by uuid; the real printer keys its
+    // reassembly on the same value, which is why the uuid and not the filename
+    // identifies the transfer.
+    const data = new Uint8Array(UPLOAD_CHUNK_BYTES * 3);
+    const uuid = 'cancel-me-uuid';
+    const controller = new AbortController();
+
+    const upload = uploadFile({
+      address: '127.0.0.1',
+      port: printer.wsPort,
+      filename: 'abandoned.goo',
+      data,
+      uuid,
+      signal: controller.signal,
+      onProgress: (sent) => {
+        // Cancel as soon as the first packet is in, so a partial exists.
+        if (sent >= UPLOAD_CHUNK_BYTES) controller.abort(new Error('cancelled'));
+      },
+    });
+
+    await expect(upload).rejects.toThrow();
+    expect(printer.partialUploads()).toContain(uuid);
+
+    await client.terminateFileTransfer(uuid, 'abandoned.goo');
+
+    expect(printer.terminated).toEqual([uuid]);
+    expect(printer.partialUploads()).not.toContain(uuid);
+    // A cancelled transfer must leave no file behind.
+    expect(printer.uploads.has('abandoned.goo')).toBe(false);
+  });
+
+  it('acks a cancel for a transfer the printer never saw', async () => {
+    // A client cancels without knowing whether any packet arrived; a cancel of
+    // nothing has still achieved what was asked.
+    await expect(
+      client.terminateFileTransfer('never-existed', 'ghost.goo'),
+    ).resolves.toBeUndefined();
   });
 });
