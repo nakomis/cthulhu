@@ -122,7 +122,7 @@ async function main(): Promise<void> {
           else await printer.client?.setVideoStream(false).catch(() => {});
         },
         // A printer power cycle leaves the upstream silent rather than closed
-        // (CTHU-31). Twice ffmpeg's own read timeout, so that normally wins.
+        // (CTHU-31), and ffmpeg's own read timeout takes minutes to act.
         stallTimeoutMs: 20_000,
       })
     : undefined;

@@ -223,7 +223,7 @@ describe('openRtspAsMjpeg', () => {
     expect(args).not.toContain('-min_port');
   });
 
-  it('gives up on a silent stream after ten seconds, set before -i', () => {
+  it('sets a ten-second RTSP read timeout, before -i', () => {
     // Power-cycling the printer mid-stream sends nothing over UDP to say it
     // has gone: without a timeout ffmpeg waited for packets for hours, and
     // every viewer joined a dead stream (CTHU-31). The value is microseconds.

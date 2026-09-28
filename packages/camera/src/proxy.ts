@@ -30,10 +30,11 @@ export interface CameraProxyOptions {
   /**
    * Abort an upstream that has sent nothing for this long. Unset: never.
    *
-   * A backstop for ffmpeg's own read timeout (see rtsp.ts): after a printer
-   * power cycle the upstream went quiet without ending or erroring, and
-   * every viewer joined the dead stream for hours (CTHU-31). It also covers
-   * the plain HTTP upstream, which has no ffmpeg to time out.
+   * After a printer power cycle the upstream went quiet without ending or
+   * erroring, and every viewer joined the dead stream for hours (CTHU-31).
+   * ffmpeg's own read timeout (see rtsp.ts) does not rescue that promptly -
+   * it retries for minutes - so this is what actually recovers the stream.
+   * It also covers the plain HTTP upstream, which has no ffmpeg at all.
    */
   stallTimeoutMs?: number;
 }

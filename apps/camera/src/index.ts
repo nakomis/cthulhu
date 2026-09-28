@@ -15,8 +15,9 @@ import { TimelapseStore } from './timelapse.js';
  *   FFMPEG_PATH   default "ffmpeg"; launchd runs without Homebrew on PATH
  *   STALL_TIMEOUT_MS
  *                 abort an upstream that has sent nothing for this long,
- *                 default 20000 - twice ffmpeg's own read timeout, which
- *                 normally fires first. See CTHU-31.
+ *                 default 20000. After a printer power cycle this is what
+ *                 recovers the stream: ffmpeg's own timeout takes minutes.
+ *                 See CTHU-31.
  *   TIMELAPSE_DIR where time-lapse frames and videos go; unset = no time-lapses
  *   TIMELAPSE_FPS frames per second of a finished time-lapse, default 30
  *   RTP_PORT_MIN, RTP_PORT_MAX
