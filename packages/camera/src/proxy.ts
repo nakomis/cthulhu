@@ -27,6 +27,16 @@ export interface CameraProxyOptions {
   onActive?: () => void | Promise<void>;
   /** Called when the last viewer leaves, to release the single slot. */
   onIdle?: () => void | Promise<void>;
+  /**
+   * Abort an upstream that has sent nothing for this long. Unset: never.
+   *
+   * After a printer power cycle the upstream went quiet without ending or
+   * erroring, and every viewer joined the dead stream for hours (CTHU-31).
+   * ffmpeg's own read timeout (see rtsp.ts) does not rescue that promptly -
+   * it retries for minutes - so this is what actually recovers the stream.
+   * It also covers the plain HTTP upstream, which has no ffmpeg at all.
+   */
+  stallTimeoutMs?: number;
 }
 
 /**
@@ -57,11 +67,14 @@ export class CameraProxy {
   private readonly openUpstream: () => Promise<UpstreamHandle>;
   private readonly onActive: (() => void | Promise<void>) | undefined;
   private readonly onIdle: (() => void | Promise<void>) | undefined;
+  private readonly stallTimeoutMs: number | undefined;
+  private stallTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: CameraProxyOptions) {
     this.openUpstream = options.openUpstream;
     this.onActive = options.onActive;
     this.onIdle = options.onIdle;
+    this.stallTimeoutMs = options.stallTimeoutMs;
   }
 
   get viewerCount(): number {
@@ -96,9 +109,6 @@ export class CameraProxy {
       await this.onActive?.();
       const handle = await this.openUpstream();
       this.upstream = handle;
-      handle.stream.on('data', (chunk: Buffer) => {
-        for (const v of this.viewers) this.deliver(v, chunk);
-      });
       // The upstream died on its own (ffmpeg exited, or never started). Tell
       // the printer too: it counts every enable against
       // MaximumVideoStreamAllowed until it is told otherwise, so skipping
@@ -106,10 +116,24 @@ export class CameraProxy {
       const drop = () => {
         if (this.upstream !== handle) return;
         this.upstream = undefined;
+        this.clearStallTimer();
         for (const v of this.viewers) v.end();
         this.viewers.clear();
         void this.onIdle?.();
       };
+      // Gone quiet without ending: kill it, as abort() in closeUpstream does,
+      // then drop it like any other upstream that died.
+      const stalled = () => {
+        if (this.upstream !== handle) return;
+        handle.abort();
+        handle.stream.destroy();
+        drop();
+      };
+      this.armStallTimer(stalled);
+      handle.stream.on('data', (chunk: Buffer) => {
+        this.armStallTimer(stalled);
+        for (const v of this.viewers) this.deliver(v, chunk);
+      });
       handle.stream.on('end', drop);
       handle.stream.on('error', drop);
     })();
@@ -149,9 +173,24 @@ export class CameraProxy {
     viewer.write(data.subarray(at));
   }
 
+  /** (Re)start the countdown to declaring the upstream stalled. */
+  private armStallTimer(onStall: () => void): void {
+    if (this.stallTimeoutMs === undefined) return;
+    this.clearStallTimer();
+    this.stallTimer = setTimeout(onStall, this.stallTimeoutMs);
+    this.stallTimer.unref?.();
+  }
+
+  private clearStallTimer(): void {
+    if (this.stallTimer === undefined) return;
+    clearTimeout(this.stallTimer);
+    this.stallTimer = undefined;
+  }
+
   private async closeUpstream(): Promise<void> {
     const handle = this.upstream;
     this.upstream = undefined;
+    this.clearStallTimer();
     if (handle) {
       // abort() first: destroying the stream alone leaves the TCP connection
       // established and the printer's single slot occupied.

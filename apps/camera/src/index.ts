@@ -13,6 +13,11 @@ import { TimelapseStore } from './timelapse.js';
  *   WIDTH         output width in px, default 960
  *   QUALITY       ffmpeg JPEG quality, 2 (best) to 31, default 5
  *   FFMPEG_PATH   default "ffmpeg"; launchd runs without Homebrew on PATH
+ *   STALL_TIMEOUT_MS
+ *                 abort an upstream that has sent nothing for this long,
+ *                 default 20000. After a printer power cycle this is what
+ *                 recovers the stream: ffmpeg's own timeout takes minutes.
+ *                 See CTHU-31.
  *   TIMELAPSE_DIR where time-lapse frames and videos go; unset = no time-lapses
  *   TIMELAPSE_FPS frames per second of a finished time-lapse, default 30
  *   RTP_PORT_MIN, RTP_PORT_MAX
@@ -50,6 +55,7 @@ function main(): void {
 
   const { server } = createCameraService({
     log,
+    stallTimeoutMs: num(env.STALL_TIMEOUT_MS, 20_000),
     ...(timelapse ? { timelapse } : {}),
     openUpstream: async () =>
       openRtspAsMjpeg({

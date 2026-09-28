@@ -49,6 +49,16 @@ export interface RtspOptions {
    */
   rtpPortMin?: number;
   rtpPortMax?: number;
+  /**
+   * ffmpeg's RTSP read timeout, default 10 s. Without one, a printer that
+   * vanishes mid-stream - power-cycled, off WiFi - leaves ffmpeg polling its
+   * UDP socket forever: RTP over UDP has no way to say the sender has gone
+   * (CTHU-31). Even with it, ffmpeg 5.1 logs each timeout and tries again,
+   * exiting only after 2-3 minutes (measured against a frozen mediamtx), so
+   * CameraProxy's stallTimeoutMs is what recovers promptly. This makes sure
+   * ffmpeg does not outlive the proxy's interest in it.
+   */
+  readTimeoutMs?: number;
   /** Injected in tests. */
   spawnImpl?: typeof spawn;
   onLog?: (line: string) => void;
@@ -64,6 +74,7 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
     ffmpegPath = 'ffmpeg',
     rtpPortMin,
     rtpPortMax,
+    readTimeoutMs = 10_000,
     spawnImpl = spawn,
     onLog,
   } = options;
@@ -91,6 +102,11 @@ export function openRtspAsMjpeg(options: RtspOptions): UpstreamHandle {
       ...(rtpPortMin !== undefined && rtpPortMax !== undefined
         ? ['-min_port', String(rtpPortMin), '-max_port', String(rtpPortMax)]
         : []),
+      // The RTSP demuxer's socket timeout, in microseconds; the default is to
+      // wait forever. An input option too. (-rw_timeout is not an RTSP
+      // option in 5.1: ffmpeg refuses to start with it.)
+      '-timeout',
+      String(readTimeoutMs * 1000),
       '-i',
       url,
       '-f',

@@ -11,6 +11,8 @@ export interface CameraServiceOptions {
   timelapse?: TimelapseStore;
   /** How old the latest frame may be and still count as "now". */
   maxFrameAgeMs?: number;
+  /** Abort an upstream silent for this long; see CameraProxyOptions. */
+  stallTimeoutMs?: number;
   log?: (line: string) => void;
 }
 
@@ -38,6 +40,7 @@ export function createCameraService(options: CameraServiceOptions): {
       handle.stream.on('data', (chunk: Buffer) => latest.push(chunk));
       return handle;
     },
+    ...(options.stallTimeoutMs !== undefined ? { stallTimeoutMs: options.stallTimeoutMs } : {}),
   });
 
   // A recording time-lapse holds the stream open with a viewer that throws
