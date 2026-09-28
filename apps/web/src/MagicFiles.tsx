@@ -108,32 +108,17 @@ export function MagicFiles({
 }
 
 /**
- * A wand and sparkle over a file, standing in for a proper icon: the
- * fal.ai image-gen MCP was unreachable when this was built (CTHU-30), so
- * this inline SVG is the fallback rather than a static asset under
- * apps/web/public.
+ * A tentacle holding a wand over a file, in the app icon's green-on-navy, so
+ * the box reads as cthulhu's own rather than a generic sparkle. Decorative:
+ * each row's name already says what it is. Source at docs/icons/magic-files-1024.png.
  */
 function MagicIcon() {
   return (
-    <svg
-      viewBox="0 0 24 24"
+    <img
+      src="/magic-files-96.png"
+      alt=""
       aria-hidden="true"
-      className="size-12 shrink-0 rounded bg-slate-800 p-2 text-tentacle"
-    >
-      <path
-        d="M9 6l9 9-3 3-9-9z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <path d="M7.5 7.5l1.5 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      <path
-        d="M6 3.5v2.5M4.75 4.75h2.5M17.5 12.5v2.5M16.25 13.75h2.5"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinecap="round"
-      />
-    </svg>
+      className="size-12 shrink-0 rounded bg-black object-contain"
+    />
   );
 }
