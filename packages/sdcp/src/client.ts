@@ -567,10 +567,23 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
    * Waiting for the status to clear matters when re-uploading a file of the
    * same name: the old copy is listed throughout, and the error beats the
    * status change by around a second on the Mars 5 Ultra.
+   *
+   * ## The deadline does not run while the printer is still working
+   *
+   * After the last packet the printer has to finalise and MD5 the file, and it
+   * reports MachineStatus.FileTransferring throughout. On a 368 MB upload that
+   * took longer than the old flat 30 s, so a PERFECTLY GOOD transfer was
+   * rejected — and the obvious response, re-uploading, costs minutes and
+   * achieves nothing.
+   *
+   * So `timeoutMs` measures what it should: how long the printer has been IDLE
+   * while still not listing the file. Time spent transferring does not count
+   * against it. A printer that is visibly busy is not a printer that has
+   * failed, and the machine cannot stay in that state indefinitely.
    */
   async confirmUploaded(
     filename: string,
-    { timeoutMs = 30_000, intervalMs = 1000 }: { timeoutMs?: number; intervalMs?: number } = {},
+    { timeoutMs = 60_000, intervalMs = 1000 }: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<string> {
     const base = filename.split('/').pop() ?? filename;
     const target = `/local/${base}`;
@@ -582,10 +595,14 @@ export class SdcpClient extends EventEmitter<SdcpClientEvents> {
     };
     this.on('printerError', onPrinterError);
     try {
-      const deadline = Date.now() + timeoutMs;
+      let deadline = Date.now() + timeoutMs;
       for (;;) {
         if (rejected) throw new UploadRejectedError(base, errorCode);
-        if (!this.transferring) {
+        if (this.transferring) {
+          // Still finalising. Push the deadline out rather than counting this
+          // against it - see the note above; a busy printer has not failed.
+          deadline = Date.now() + timeoutMs;
+        } else {
           const list = await this.listFiles('/local');
           const data = (list.Data ?? list) as { FileList?: { name?: unknown }[] };
           const names = (data.FileList ?? []).map((f) => String(f.name));

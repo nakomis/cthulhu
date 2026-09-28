@@ -127,6 +127,12 @@ export function Files({
             ? err.message
             : String(err),
       );
+      // Re-read the list even on failure. "Failed" can be a false negative —
+      // the printer is slower to list a large file than we are to give up on
+      // it — and leaving the list stale made a working upload look doubly
+      // broken: the file was there, just invisible until a manual refresh.
+      // The printer is the authority on what it holds, not our verdict.
+      await refresh();
     } finally {
       setWorking(false);
       setUploading(false);
