@@ -25,6 +25,7 @@ If you find this useful, please consider buying me a coffee:
 - [The protocol](#the-protocol)
 - [What the real printer taught us](#what-the-real-printer-taught-us)
 - [The camera](#the-camera)
+- [Magic Files](#magic-files)
 - [Print history and time-lapse storage](#print-history-and-time-lapse-storage)
   * [Migrating history from SQLite to Postgres](#migrating-history-from-sqlite-to-postgres)
 - [Development](#development)
@@ -94,6 +95,11 @@ Found against an Elegoo Mars 5 Ultra, firmware V1.5.0, on 23–24 September
 | That web server is unauthenticated and serves everything, **including the WiFi password in plain text** (`/media/mmcblk0p1/wlan_entry`) | cthulhu only ever fetches `.goo`/`.ctb` under the two storage roots. The real fix is network isolation |
 | Cmd 321 works for the print in progress, giving the file's full path (`TaskName`) and a 400×300 thumbnail URL | The Status panel's picture, for however the print was started |
 | `.goo` layers: 0x55, runs, a checksum (bitwise NOT of the byte sum). A run's length keeps its **low** 4 bits in the lead byte | `packages/goo`, proven against every layer of a real file |
+| A magnetic flex build plate (a 3.1-3.2 mm magnet+steel stack) trips the pre-print "Foreign Material Detected" check | Fixed by a config gcode that raises six firmware Z thresholds by the plate's thickness, then `M5999 I0` to save - see [Magic Files](#magic-files) |
+| A `.gcode` upload succeeds and genuinely lands in `/local`, but the Cmd 258 file listing **hides it** (the touchscreen shows it, without a preview) | Magic Files never calls `confirmUploaded()` - waiting for one to appear in the listing would just time out |
+| Cmd 128 (start print) on a `.gcode` answers Ack 6 "unknown file format" | A config gcode can only be run from the printer's own touchscreen Print menu, never over SDCP |
+| A save that **changes** a value makes the next boot run the setup wizard (region + WiFi must be re-entered); re-saving identical values does not | Worth warning about before sending an offset that differs from what is already applied |
+| There is no separate auto-levelling menu item - levelling runs at the start of every print | The levelling end setting (`I205 B`) always matters, not just on first setup |
 
 ## The camera
 
@@ -137,6 +143,36 @@ only in that container:
   (Luke, Rey).
 - `TIMELAPSE_DIR` / `TIMELAPSE_FPS` — see
   [Print history and time-lapse storage](#print-history-and-time-lapse-storage).
+
+## Magic Files
+
+Server-generated config gcode files for printer quirks that have no menu of
+their own on the printer - so far, just the Z-offset a magnetic flex build
+plate needs (see the table above). `GET /api/magic` lists what's on offer,
+each with a filename and whether it can currently be sent; `POST
+/api/magic/:id/send` generates the file and uploads it over the same SDCP
+path as a normal print (`packages/sdcp`'s `uploadFile`), straight into
+`/local`.
+
+Two entries exist:
+
+- **Z-offset** (`zoff-<n>mm.gcode`, e.g. `zoff-3.2mm.gcode`) - raises the six
+  thresholds by `PLATE_Z_OFFSET_MM`. Needs that variable set; without it the
+  entry is listed but marked unavailable, with the reason given.
+- **Reset Z-offset** (`zoff-reset.gcode`) - Elegoo's stock values, always
+  available.
+
+Sending one only uploads it - nothing on the printer changes until it is run
+from the touchscreen's Print menu (`.gcode` cannot be started over SDCP, and
+the file will not appear in the network file list - see the table above), and
+the printer usually then asks for a power-cycle.
+
+`PLATE_Z_OFFSET_MM` (server env var) is how much thicker than stock glass the
+fitted plate is, in mm - `3.2` for the magnet+steel stack of a magnetic flex
+plate. Filenames use one decimal place, and are kept short because the
+touchscreen truncates the Print menu at around 12 characters. Unset or out of
+a sensible `(0, 10]` range leaves the Z-offset entry present but unavailable,
+rather than failing the server to start.
 
 ## Print history and time-lapse storage
 

@@ -47,4 +47,35 @@ describe('loadConfig', () => {
       expected,
     );
   });
+
+  describe('PLATE_Z_OFFSET_MM', () => {
+    it('is undefined when unset', () => {
+      expect(loadConfig({ PRINTER_IP: '1.2.3.4' }).plateZOffsetMm).toBeUndefined();
+    });
+
+    it('parses a sensible offset', () => {
+      expect(loadConfig({ PRINTER_IP: '1.2.3.4', PLATE_Z_OFFSET_MM: '3.2' }).plateZOffsetMm).toBe(
+        3.2,
+      );
+    });
+
+    // Invalid values are treated as unset rather than refusing to start: a
+    // typo here should disable the Magic Files Z-offset entry, not the whole
+    // server - see the comment on plateZOffsetFromEnv in config.ts.
+    it.each(['0', '-1', '10.1', 'not-a-number', ''])(
+      'treats %s as unconfigured rather than throwing',
+      (raw) => {
+        expect(() => loadConfig({ PRINTER_IP: '1.2.3.4', PLATE_Z_OFFSET_MM: raw })).not.toThrow();
+        expect(
+          loadConfig({ PRINTER_IP: '1.2.3.4', PLATE_Z_OFFSET_MM: raw }).plateZOffsetMm,
+        ).toBeUndefined();
+      },
+    );
+
+    it('accepts the top of the sensible range', () => {
+      expect(loadConfig({ PRINTER_IP: '1.2.3.4', PLATE_Z_OFFSET_MM: '10' }).plateZOffsetMm).toBe(
+        10,
+      );
+    });
+  });
 });

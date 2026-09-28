@@ -3,6 +3,7 @@ import { api, type PrinterView } from './api.js';
 import { Camera } from './Camera.js';
 import { Files } from './Files.js';
 import { Layer } from './Layer.js';
+import { MagicFiles } from './MagicFiles.js';
 import {
   canPause,
   canResume,
@@ -170,6 +171,8 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
         </section>
 
         <Files busy={active} onChanged={() => void refresh()} />
+
+        <MagicFiles />
 
         <Timelapses />
 
