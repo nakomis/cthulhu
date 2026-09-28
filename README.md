@@ -84,6 +84,7 @@ Found against an Elegoo Mars 5 Ultra, firmware V1.5.0, on 23–24 September
 | A rejected upload is reported **only** as `sdcp/error` (`ErrorCode` 1 MD5, 2 format) | An upload has succeeded only once the printer lists it in `/local`: `confirmUploaded()` |
 | While it checks a file, the printer holds it as `/local/<uuid>_<name>` and reports machine status `[2, 8]` | A listing taken then shows a file that is about to vanish |
 | The camera is RTSP **over UDP only**; asked for TCP it answers "Nonmatching transport" | ffmpeg uses `-rtsp_transport udp+tcp` |
+| Power-cycling the printer mid-stream sends nothing over UDP, so ffmpeg waits for packets forever and every viewer joins a dead stream | ffmpeg runs with `-timeout` (10 s), and the proxy aborts any upstream silent for 20 s (CTHU-31) |
 | `MaximumVideoStreamAllowed` is **2**, and the printer's count of enabled streams can stick at the limit with nobody watching | It then refuses Cmd 386 with Ack 1 while its RTSP server keeps serving: cthulhu falls back to the last URL |
 | `DevicesStatus` (film health and friends) comes only in **attributes**, without `XMotorStatus` | The store takes it from whichever frame has it |
 | Status has no `TempOfBox`, `CurrenCoord`, `PrintScreen` or `PreviousStatus` | Parsed as optional, as ever |

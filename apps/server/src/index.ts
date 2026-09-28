@@ -121,6 +121,9 @@ async function main(): Promise<void> {
           if (config.cameraUrl) await videoLease.release();
           else await printer.client?.setVideoStream(false).catch(() => {});
         },
+        // A printer power cycle leaves the upstream silent rather than closed
+        // (CTHU-31). Twice ffmpeg's own read timeout, so that normally wins.
+        stallTimeoutMs: 20_000,
       })
     : undefined;
 

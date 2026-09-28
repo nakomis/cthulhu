@@ -223,6 +223,26 @@ describe('openRtspAsMjpeg', () => {
     expect(args).not.toContain('-min_port');
   });
 
+  it('gives up on a silent stream after ten seconds, set before -i', () => {
+    // Power-cycling the printer mid-stream sends nothing over UDP to say it
+    // has gone: without a timeout ffmpeg waited for packets for hours, and
+    // every viewer joined a dead stream (CTHU-31). The value is microseconds.
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({ url: 'rtsp://x/live', spawnImpl: spawnImpl as never });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+
+    expect(args[args.indexOf('-timeout') + 1]).toBe('10000000');
+    expect(args.indexOf('-timeout')).toBeLessThan(args.indexOf('-i'));
+  });
+
+  it('honours a custom read timeout', () => {
+    const { spawnImpl } = fakeSpawn();
+    openRtspAsMjpeg({ url: 'rtsp://x/live', readTimeoutMs: 2500, spawnImpl: spawnImpl as never });
+    const [, args] = spawnImpl.mock.calls[0] as [string, string[]];
+
+    expect(args[args.indexOf('-timeout') + 1]).toBe('2500000');
+  });
+
   it('stays quiet about ffmpeg complaining that it was stopped', () => {
     const { child, spawnImpl } = fakeSpawn();
     const logs: string[] = [];

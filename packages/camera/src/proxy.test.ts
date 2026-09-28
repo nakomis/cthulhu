@@ -1,5 +1,5 @@
 import { createFakePrinter, type FakePrinter } from '@cthulhu/fake-printer';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CameraProxy } from './proxy.js';
 
 let printer: FakePrinter;
@@ -189,5 +189,95 @@ describe('camera proxy against a printer that allows exactly one stream', () => 
 
     expect(first()).toBe(part(1) + part(2));
     expect(late()).toBe(part(2));
+  });
+});
+
+describe('camera proxy stall watchdog (CTHU-31)', () => {
+  // After a printer power cycle the upstream neither ended nor errored - it
+  // just went quiet - so the proxy kept every new viewer on a dead stream.
+  // Only setTimeout is faked: streams deliver on nextTick/setImmediate.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function silentUpstreams() {
+    const { PassThrough } = await import('node:stream');
+    const opened: { stream: InstanceType<typeof PassThrough>; aborted: number }[] = [];
+    const openUpstream = async () => {
+      const entry = { stream: new PassThrough(), aborted: 0 };
+      opened.push(entry);
+      return {
+        stream: entry.stream,
+        abort: () => {
+          entry.aborted += 1;
+        },
+      };
+    };
+    return { opened, openUpstream };
+  }
+
+  it('aborts an upstream that goes quiet, ends its viewers and calls onIdle', async () => {
+    const { opened, openUpstream } = await silentUpstreams();
+    let idled = 0;
+    proxy = new CameraProxy({
+      openUpstream,
+      stallTimeoutMs: 20_000,
+      onIdle: () => {
+        idled += 1;
+      },
+    });
+
+    const viewer = await proxy.addViewer();
+    const ended = new Promise((r) => viewer.once('end', r));
+    viewer.resume();
+    vi.advanceTimersByTime(20_000);
+    await ended;
+
+    expect(opened[0]?.aborted).toBe(1);
+    expect(proxy.upstreamOpen).toBe(false);
+    expect(idled).toBe(1);
+  });
+
+  it('leaves a flowing upstream alone', async () => {
+    const { opened, openUpstream } = await silentUpstreams();
+    proxy = new CameraProxy({ openUpstream, stallTimeoutMs: 20_000 });
+
+    (await proxy.addViewer()).resume();
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(15_000);
+      opened[0]?.stream.write('--frame\r\n');
+      await new Promise((r) => setImmediate(r));
+    }
+
+    expect(opened[0]?.aborted).toBe(0);
+    expect(proxy.upstreamOpen).toBe(true);
+  });
+
+  it('opens a fresh upstream for the next viewer after a stall', async () => {
+    const { opened, openUpstream } = await silentUpstreams();
+    proxy = new CameraProxy({ openUpstream, stallTimeoutMs: 20_000 });
+
+    (await proxy.addViewer()).resume();
+    vi.advanceTimersByTime(20_000);
+    await new Promise((r) => setImmediate(r));
+    await proxy.addViewer();
+
+    expect(opened).toHaveLength(2);
+    expect(proxy.upstreamOpen).toBe(true);
+  });
+
+  it('leaves no timer behind once the last viewer has gone', async () => {
+    const { opened, openUpstream } = await silentUpstreams();
+    proxy = new CameraProxy({ openUpstream, stallTimeoutMs: 20_000 });
+
+    const viewer = await proxy.addViewer();
+    viewer.destroy();
+    await new Promise((r) => setImmediate(r));
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(opened[0]?.aborted).toBe(1);
   });
 });
