@@ -66,6 +66,16 @@ export interface Config {
    * on the camera service's own disk. See TimelapseArchiver and CTHU-16.
    */
   timelapseArchiveDir: string | undefined;
+  /**
+   * How much thicker than stock glass the fitted build plate is, in mm - e.g.
+   * 3.2 for the magnet+steel stack of a magnetic flex plate. Read only by the
+   * Magic Files Z-offset generator (magic-files.ts) to raise the printer's
+   * firmware thresholds by the same amount; nothing else about the printer is
+   * affected. Unset or out of a sensible range (0, 10] leaves the Z-offset
+   * entry present in the UI but marked unavailable, rather than failing
+   * startup - a bad value here should not take the whole dashboard down.
+   */
+  plateZOffsetMm: number | undefined;
 }
 
 export class ConfigError extends Error {}
@@ -77,6 +87,21 @@ function intFromEnv(env: NodeJS.ProcessEnv, key: string, fallback: number): numb
   if (!Number.isInteger(value) || value <= 0) {
     throw new ConfigError(`${key} must be a positive integer, got ${JSON.stringify(raw)}`);
   }
+  return value;
+}
+
+/**
+ * Unlike intFromEnv/boolFromEnv, an invalid value here does NOT throw: it
+ * returns undefined, and the caller treats that as "not configured" rather
+ * than refusing to start. This one number gates a single optional feature
+ * (the Magic Files Z-offset entry), so a typo in it should disable that
+ * entry, not the whole server.
+ */
+function plateZOffsetFromEnv(env: NodeJS.ProcessEnv): number | undefined {
+  const raw = env.PLATE_Z_OFFSET_MM;
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0 || value > 10) return undefined;
   return value;
 }
 
@@ -118,6 +143,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxUploadBytes: intFromEnv(env, 'MAX_UPLOAD_BYTES', 1024 * 1024 * 1024),
     webRoot: env.WEB_ROOT || undefined,
     timelapseArchiveDir: env.TIMELAPSE_ARCHIVE_DIR || undefined,
+    plateZOffsetMm: plateZOffsetFromEnv(env),
   };
 
   if (!config.printerIp && !config.discoveryEnabled) {

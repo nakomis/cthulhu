@@ -10,6 +10,7 @@ import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { FileMetaCache } from './file-meta.js';
 import { SqliteHistory } from './history.js';
+import { generateZOffsetGcode } from './magic-files.js';
 import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
@@ -366,6 +367,69 @@ describe('POST /api/upload/cancel', () => {
       expect(second.json().error).toMatch(/Already uploading one\.goo/);
     }
     await first;
+  });
+});
+
+describe('Magic Files', () => {
+  it('lists Reset Z-offset as always available, and Z-offset as unavailable without PLATE_Z_OFFSET_MM', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/magic' });
+    expect(res.statusCode).toBe(200);
+    const files = res.json().files as { id: string; available: boolean; reason?: string }[];
+    expect(files.find((f) => f.id === 'reset')?.available).toBe(true);
+    const zoff = files.find((f) => f.id === 'zoff');
+    expect(zoff?.available).toBe(false);
+    expect(zoff?.reason).toMatch(/PLATE_Z_OFFSET_MM/);
+  });
+
+  it('sends the reset file over the real transfer protocol, without waiting on confirmUploaded', async () => {
+    // A .gcode upload is hidden from the Cmd 258 listing even though it lands
+    // on the printer, so a passing test here (rather than a hang) is itself
+    // evidence the route does not call confirmUploaded() - see magic-files.ts.
+    await settle();
+    const res = await app.inject({ method: 'POST', url: '/api/magic/reset/send' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, filename: 'zoff-reset.gcode' });
+
+    expect(printer.uploads.has('zoff-reset.gcode')).toBe(true);
+    const uploaded = printer.uploads.get('zoff-reset.gcode');
+    expect(uploaded?.data.toString('utf8')).toBe(generateZOffsetGcode(0));
+  });
+
+  it('refuses to send Z-offset while it is unconfigured', async () => {
+    await settle();
+    const res = await app.inject({ method: 'POST', url: '/api/magic/zoff/send' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/PLATE_Z_OFFSET_MM/);
+  });
+
+  it('404s an unknown id', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/magic/bogus/send' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('sends the actual Z-offset file once PLATE_Z_OFFSET_MM is configured', async () => {
+    // A second app sharing the same store/printer/history, differing only in
+    // config - PLATE_Z_OFFSET_MM is read at request time via the `config`
+    // closure, so there is no need to rebuild the whole fixture for this.
+    const offsetConfig = loadConfig({
+      PRINTER_IP: '127.0.0.1',
+      DISCOVERY_ENABLED: 'false',
+      DATABASE_PATH: join(dir, 'test.sqlite'),
+      UPLOAD_PORT: String(printer.wsPort),
+      PLATE_Z_OFFSET_MM: '3.2',
+    });
+    const offsetApp = buildApp({ config: offsetConfig, store, printer: service, history });
+    await settle();
+    try {
+      const res = await offsetApp.inject({ method: 'POST', url: '/api/magic/zoff/send' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().filename).toBe('zoff-3.2mm.gcode');
+
+      const uploaded = printer.uploads.get('zoff-3.2mm.gcode');
+      expect(uploaded?.data.toString('utf8')).toBe(generateZOffsetGcode(3.2));
+    } finally {
+      await offsetApp.close();
+    }
   });
 });
 

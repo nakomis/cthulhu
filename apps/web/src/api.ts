@@ -61,6 +61,15 @@ export interface FileMeta {
   preview: boolean;
 }
 
+export interface MagicFileEntry {
+  id: string;
+  name: string;
+  filename: string;
+  description: string;
+  available: boolean;
+  reason?: string;
+}
+
 export interface UploadProgress {
   filename: string;
   sent: number;
@@ -141,4 +150,19 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ files: paths, confirm: true }),
     }).then((r) => json<{ deleted: string[]; files?: PrinterFile[] }>(r)),
+  magicFiles: async (): Promise<MagicFileEntry[]> => {
+    const res = await fetch('/api/magic');
+    if (!res.ok) return [];
+    const body = (await res.json()) as { files?: MagicFileEntry[] };
+    return body.files ?? [];
+  },
+  /**
+   * Send a Magic File to the printer. Nothing changes on the printer until
+   * it is run from the touchscreen, so - unlike upload and delete - this
+   * needs no confirmation step of its own.
+   */
+  sendMagicFile: (id: string) =>
+    fetch(`/api/magic/${encodeURIComponent(id)}/send`, { method: 'POST' }).then((r) =>
+      json<{ filename: string; size: number }>(r),
+    ),
 };

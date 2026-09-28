@@ -17,6 +17,10 @@ services:
       # Set PRINTER_IP in .env when the printer is not on Luke's subnet.
       PRINTER_IP: ${PRINTER_IP:-}
       DISCOVERY_ENABLED: ${DISCOVERY_ENABLED:-true}
+      # Uncomment once a magnetic flex plate is fitted, so Magic Files can
+      # generate a matching Z-offset config gcode (CTHU-30). 3.2 mm is the
+      # magnet+steel stack thickness verified on the real printer.
+      # PLATE_Z_OFFSET_MM: ${PLATE_Z_OFFSET_MM:-3.2}
     env_file:
       - .env
 

@@ -16,6 +16,7 @@ import type { Config } from './config.js';
 import { listPrintableFiles } from './file-list.js';
 import type { FileMetaCache } from './file-meta.js';
 import type { HistoryStore } from './history.js';
+import { buildMagicFile, listMagicFiles, MagicFileError } from './magic-files.js';
 import type { PrintView } from './print-view.js';
 import type { PrinterService } from './printer.js';
 import type { PrinterStore } from './store.js';
@@ -575,6 +576,63 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       printerNotified,
       ...(printerError ? { printerError } : {}),
     };
+  });
+
+  /**
+   * Magic Files - small config gcode files that fix known printer quirks.
+   * See magic-files.ts and the README's "What the real printer taught us".
+   */
+  app.get('/api/magic', async () => ({ files: listMagicFiles(config) }));
+
+  /**
+   * Send a Magic File to the printer, over the same upload path as a normal
+   * print file. Unlike /api/upload this does NOT call confirmUploaded(): the
+   * file lands in /local but the Cmd 258 listing hides it, so waiting for it
+   * to appear there would just time out. These can only be run from the
+   * printer's own touchscreen Print menu, so a successful upload is the end
+   * of the server's part of the job.
+   */
+  app.post<{ Params: { id: string } }>('/api/magic/:id/send', async (request, reply) => {
+    let file: { filename: string; data: string };
+    try {
+      file = buildMagicFile(request.params.id, config);
+    } catch (err) {
+      if (err instanceof MagicFileError) {
+        return reply.code(err.code === 'not-found' ? 404 : 409).send({ error: err.message });
+      }
+      throw err;
+    }
+
+    const address = store.snapshot().address ?? config.printerIp;
+    if (!address) return reply.code(503).send({ error: 'No printer address' });
+
+    const client = printer?.client;
+    if (!client) return reply.code(503).send({ error: 'Not connected to the printer' });
+
+    // A Magic File is a few hundred bytes and finishes before it could
+    // meaningfully collide with a real upload, but the printer reassembles
+    // transfers by offset under a single Uuid regardless of size - so it
+    // shares the same one-at-a-time guard as /api/upload.
+    if (inflight) {
+      return reply.code(409).send({
+        error: `Already uploading ${inflight.filename}. Cancel it first, or wait.`,
+      });
+    }
+
+    try {
+      const result = await uploadFile({
+        address,
+        filename: file.filename,
+        data: Buffer.from(file.data, 'utf8'),
+        ...(config.uploadPort ? { port: config.uploadPort } : {}),
+      });
+      return { ok: true, filename: result.filename, size: result.size };
+    } catch (err) {
+      if (err instanceof UploadError || err instanceof UploadRejectedError) {
+        return reply.code(502).send({ error: err.message });
+      }
+      throw err;
+    }
   });
 
   if (camera) {
