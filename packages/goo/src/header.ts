@@ -9,6 +9,14 @@
  * first layer starts, so nothing depends on knowing its full length.
  */
 export const GOO_MAGIC = Uint8Array.from([0x07, 0x00, 0x00, 0x00, 0x44, 0x4c, 0x50, 0x00]);
+
+/**
+ * Version strings with the layout below. Chitubox writes "V3.0"; DragonFruit
+ * writes "V1.2" with the same magic and the same layout (its encoder's field
+ * list matches this header field for field). Anything else is a layout this
+ * has not been checked against, so it is refused rather than misread.
+ */
+export const GOO_VERSIONS = ['V3.0', 'V1.2'] as const;
 export const SMALL_PREVIEW = { width: 116, height: 116 } as const;
 export const BIG_PREVIEW = { width: 290, height: 290 } as const;
 
@@ -44,7 +52,10 @@ export interface GooHeader {
 export function isGoo(data: Uint8Array): boolean {
   if (data.length < 12) return false;
   const version = String.fromCharCode(...data.subarray(0, 4));
-  return version === 'V3.0' && GOO_MAGIC.every((b, i) => data[4 + i] === b);
+  return (
+    (GOO_VERSIONS as readonly string[]).includes(version) &&
+    GOO_MAGIC.every((b, i) => data[4 + i] === b)
+  );
 }
 
 export function parseGooHeader(data: Uint8Array): GooHeader | undefined {
@@ -55,7 +66,7 @@ export function parseGooHeader(data: Uint8Array): GooHeader | undefined {
     String.fromCharCode(...data.subarray(start, start + length)).replace(/\0.*$/s, '');
 
   const header: GooHeader = {
-    // After "V3.0", the magic, software (32), its version (24) and file time
+    // After the version, the magic, software (32), its version (24) and file time
     // (24): the printer name.
     machineName: text(4 + 8 + 32 + 24 + 24, 32),
     layerCount: view.getUint32(s),
