@@ -82,24 +82,41 @@ function LightboxDialog({
   const panel = useRef<HTMLDivElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const captionId = useId();
+  // Closing hands focus back to the thumbnail while this is still mounted;
+  // the focus guard below must let that through.
+  const closing = useRef(false);
+  const shut = useCallback(() => {
+    closing.current = true;
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     closeButton.current?.focus();
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        shut();
       }
     };
     document.addEventListener('keydown', onKey);
+    // Tab only wraps at the ends; after a click on plain content, focus sits
+    // on the body and the next Tab would leave. Bring it straight back.
+    const onFocusIn = (e: FocusEvent) => {
+      if (closing.current) return;
+      if (panel.current && e.target instanceof Node && !panel.current.contains(e.target)) {
+        closeButton.current?.focus();
+      }
+    };
+    document.addEventListener('focusin', onFocusIn);
     // The page underneath should not scroll away behind the picture.
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('focusin', onFocusIn);
       document.body.style.overflow = overflow;
     };
-  }, [onClose]);
+  }, [shut]);
 
   // Keep Tab inside the dialog: it is modal, and the page behind is inert.
   const trapTab = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -125,7 +142,7 @@ function LightboxDialog({
     <div
       data-testid="lightbox-backdrop"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) shut();
       }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-2 backdrop-blur-sm"
     >
@@ -148,7 +165,7 @@ function LightboxDialog({
             <button
               ref={closeButton}
               type="button"
-              onClick={onClose}
+              onClick={shut}
               className="rounded-lg border border-slate-600 px-3 py-1 text-slate-200 hover:bg-slate-800"
             >
               Close
@@ -180,10 +197,19 @@ export function LightboxImage({ src, alt, pixelated = false }: LightboxImageProp
   // Width over height, once loaded, so a small image can be scaled UP to fit:
   // max-width alone only ever shrinks.
   const [aspect, setAspect] = useState<number | undefined>();
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <p className="rounded bg-slate-900 px-4 py-8 text-sm text-slate-300">
+        This picture could not be loaded.
+      </p>
+    );
+  }
   return (
     <img
       src={src}
       alt={alt}
+      onError={() => setFailed(true)}
       onLoad={(e) => {
         const { naturalWidth, naturalHeight } = e.currentTarget;
         if (naturalWidth > 0 && naturalHeight > 0) setAspect(naturalWidth / naturalHeight);

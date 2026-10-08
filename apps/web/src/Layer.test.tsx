@@ -164,4 +164,30 @@ describe('Layer', () => {
     await userEvent.keyboard('{Escape}');
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(src);
   });
+
+  it('keeps the stand-in alive while open, however far the print moves on', async () => {
+    // The big render never arrives, so the dialog keeps showing the stand-in.
+    const fetchLayer = vi.fn((_layer: number, scale?: number) =>
+      scale ? new Promise<Response>(() => {}) : Promise.resolve(png()),
+    );
+    const { rerender } = render(<Layer layer={0} totalLayer={10} fetchLayer={fetchLayer} />);
+    await screen.findByRole('img', { name: 'Layer 1 of the print' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show layer 1 of the print full size' }),
+    );
+    const standIn = await screen.findByRole('img', {
+      name: 'Layer 1 of the print, small while the full size loads',
+    });
+    const src = standIn.getAttribute('src') as string;
+    vi.mocked(URL.revokeObjectURL).mockClear();
+    for (const layer of [1, 2, 3]) {
+      rerender(<Layer layer={layer} totalLayer={10} fetchLayer={fetchLayer} />);
+      await waitFor(() => expect(fetchLayer).toHaveBeenCalledWith(layer));
+    }
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalled());
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(src);
+    expect(standIn).toHaveAttribute('src', src);
+    await userEvent.keyboard('{Escape}');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(src);
+  });
 });

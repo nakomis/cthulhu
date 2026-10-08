@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lightbox } from './Lightbox.js';
 
 export interface LayerProps {
@@ -37,6 +37,26 @@ export function Layer({ layer, totalLayer, fetchLayer = defaultFetch }: LayerPro
   const [shown, setShown] = useState<number | undefined>();
   const [note, setNote] = useState<string | undefined>();
   const urls = useRef<string[]>([]);
+  // A lightbox shows the small image while the big one loads, and may stay
+  // open for many layers: its URL is pinned, and freed only when it closes.
+  const pinned = useRef(new Map<string, number>());
+  const retired = useRef(new Set<string>());
+  const free = useCallback((url: string) => {
+    if (pinned.current.has(url)) retired.current.add(url);
+    else URL.revokeObjectURL(url);
+  }, []);
+  const pin = useCallback((url: string) => {
+    pinned.current.set(url, (pinned.current.get(url) ?? 0) + 1);
+  }, []);
+  const unpin = useCallback((url: string) => {
+    const left = (pinned.current.get(url) ?? 1) - 1;
+    if (left > 0) {
+      pinned.current.set(url, left);
+      return;
+    }
+    pinned.current.delete(url);
+    if (retired.current.delete(url)) URL.revokeObjectURL(url);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -69,7 +89,7 @@ export function Layer({ layer, totalLayer, fetchLayer = defaultFetch }: LayerPro
         setShown(layer);
         setNote(undefined);
         // Keep the one on screen and the one replacing it; free the rest.
-        while (urls.current.length > 2) URL.revokeObjectURL(urls.current.shift() as string);
+        while (urls.current.length > 2) free(urls.current.shift() as string);
       } catch {
         if (live) setNote('No layer image for this print.');
       }
@@ -79,13 +99,14 @@ export function Layer({ layer, totalLayer, fetchLayer = defaultFetch }: LayerPro
       live = false;
       if (retry) clearTimeout(retry);
     };
-  }, [layer, fetchLayer]);
+  }, [layer, fetchLayer, free]);
 
   // Mounted once per print (keyed by task), so leaving is the only cleanup.
   useEffect(
     () => () => {
-      for (const url of urls.current) URL.revokeObjectURL(url);
+      for (const url of [...urls.current, ...retired.current]) URL.revokeObjectURL(url);
       urls.current = [];
+      retired.current.clear();
     },
     [],
   );
@@ -98,7 +119,15 @@ export function Layer({ layer, totalLayer, fetchLayer = defaultFetch }: LayerPro
         <Lightbox
           name={`layer ${shown + 1} of the print`}
           caption={`Layer ${shown + 1}${totalLayer ? ` of ${totalLayer}` : ''}`}
-          full={<LayerFull layer={shown} smallSrc={src} fetchLayer={fetchLayer} />}
+          full={
+            <LayerFull
+              layer={shown}
+              smallSrc={src}
+              fetchLayer={fetchLayer}
+              pin={pin}
+              unpin={unpin}
+            />
+          }
           actions={
             <a
               href={layerUrl(shown, 1)}
@@ -149,11 +178,21 @@ function LayerFull({
   layer,
   smallSrc,
   fetchLayer,
+  pin,
+  unpin,
 }: {
   layer: number;
   smallSrc: string;
   fetchLayer: (layer: number, scale?: number) => Promise<Response>;
+  pin: (url: string) => void;
+  unpin: (url: string) => void;
 }) {
+  // Keep the stand-in alive while this is open, however far the print moves on.
+  useEffect(() => {
+    pin(smallSrc);
+    return () => unpin(smallSrc);
+  }, [smallSrc, pin, unpin]);
+
   const [bigSrc, setBigSrc] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>('Loading the full-size layer…');
 

@@ -89,6 +89,21 @@ describe('Lightbox', () => {
     expect(link).toHaveFocus();
   });
 
+  it('brings focus back if it lands outside the dialog', async () => {
+    renderBox();
+    await open();
+    // As after a click on plain content and then Tab: focus reaches the page.
+    screen.getByRole('button', { name: 'Something else', hidden: true }).focus();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+
+  it('says so when the big picture cannot be loaded', () => {
+    render(<LightboxImage src="/missing.png" alt="Rook, full size" />);
+    fireEvent.error(screen.getByRole('img', { name: 'Rook, full size' }));
+    expect(screen.getByText('This picture could not be loaded.')).toBeInTheDocument();
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
+
   it('stops the page scrolling while open, and restores it after', async () => {
     renderBox();
     await open();
