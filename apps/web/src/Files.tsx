@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type FileMeta, type PrinterFile, type UploadProgress } from './api.js';
+import { Lightbox, LightboxImage } from './Lightbox.js';
 
 export interface FilesProps {
   /** Injected in tests. */
@@ -346,14 +347,21 @@ export function uploadEstimate(bytes: number): string {
 function FilePreview({ path, name }: { path: string; name: string }) {
   const [missing, setMissing] = useState(false);
   if (missing) return <span className="size-12 shrink-0 rounded bg-slate-800" />;
+  const src = `/api/files/preview?path=${encodeURIComponent(path)}`;
   return (
-    <img
-      src={`/api/files/preview?path=${encodeURIComponent(path)}`}
-      alt={`Preview of ${name}`}
-      loading="lazy"
-      onError={() => setMissing(true)}
-      className="size-12 shrink-0 rounded bg-black object-contain"
-    />
+    <Lightbox
+      name={`preview of ${name}`}
+      caption={name}
+      full={<LightboxImage src={src} alt={`Preview of ${name}, full size`} pixelated />}
+    >
+      <img
+        src={src}
+        alt={`Preview of ${name}`}
+        loading="lazy"
+        onError={() => setMissing(true)}
+        className="size-12 shrink-0 rounded bg-black object-contain"
+      />
+    </Lightbox>
   );
 }
 

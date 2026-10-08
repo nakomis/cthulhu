@@ -120,6 +120,40 @@ describe('Files', () => {
     expect(await screen.findByText(/893 layers · about 1 h 28 m/)).toBeInTheDocument();
     expect(fileMeta).toHaveBeenCalledWith('/local/keystamp.goo');
   });
+
+  it("opens a file's preview full size, and closes it again", async () => {
+    render(
+      <Files listFiles={async () => [file('keystamp.goo')]} fileMeta={async () => undefined} />,
+    );
+    const trigger = await screen.findByRole('button', {
+      name: 'Show preview of keystamp.goo full size',
+    });
+    await userEvent.click(trigger);
+    const dialog = screen.getByRole('dialog', { name: 'Preview of keystamp.goo' });
+    expect(dialog).toHaveAccessibleDescription('keystamp.goo');
+    const big = screen.getByRole('img', { name: 'Preview of keystamp.goo, full size' });
+    expect(big).toHaveAttribute('src', '/api/files/preview?path=%2Flocal%2Fkeystamp.goo');
+    expect(big).toHaveStyle({ imageRendering: 'pixelated' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('shows a plain grey square, not a broken image or a button, for a file without a preview', async () => {
+    const { container } = render(
+      <Files listFiles={async () => [file('boots.ctb')]} fileMeta={async () => undefined} />,
+    );
+    const img = await screen.findByRole('img', { name: 'Preview of boots.ctb' });
+    img.dispatchEvent(new Event('error'));
+    await waitFor(() =>
+      expect(screen.queryByRole('img', { name: 'Preview of boots.ctb' })).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Show preview of boots.ctb full size' }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector('li span.bg-slate-800')).toBeInTheDocument();
+  });
 });
 
 describe('Files: deleting', () => {

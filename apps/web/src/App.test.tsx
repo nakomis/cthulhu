@@ -134,6 +134,17 @@ describe('dashboard', () => {
     expect(img).toHaveAttribute('src', '/api/print/thumbnail?task=task-9');
   });
 
+  it("opens the printer's thumbnail full size, scaled up with hard pixel edges", async () => {
+    render(<App fetchStatus={async () => view({ taskId: 'task-9' })} pollMs={100_000} />);
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Show preview of the print full size' }),
+    );
+    expect(screen.getByRole('dialog', { name: 'Preview of the print' })).toBeInTheDocument();
+    const big = screen.getByRole('img', { name: 'Preview of the print, full size' });
+    expect(big).toHaveAttribute('src', '/api/print/thumbnail?task=task-9');
+    expect(big).toHaveStyle({ imageRendering: 'pixelated' });
+  });
+
   it('shows nothing, not a broken image, when there is no thumbnail', async () => {
     render(<App fetchStatus={async () => view({ taskId: 'task-9' })} pollMs={100_000} />);
     const img = await screen.findByRole('img', { name: 'Preview of the print' });
@@ -141,6 +152,9 @@ describe('dashboard', () => {
     await waitFor(() =>
       expect(screen.queryByRole('img', { name: 'Preview of the print' })).not.toBeInTheDocument(),
     );
+    expect(
+      screen.queryByRole('button', { name: 'Show preview of the print full size' }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the printer's total time between Done and Remaining", async () => {
