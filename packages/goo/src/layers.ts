@@ -79,7 +79,10 @@ export function decodeLayer(data: Uint8Array, options: DecodeOptions): RasterIma
 
   const outW = Math.ceil(width / scale);
   const outH = Math.ceil(height / scale);
-  const acc = new Float64Array(outW * outH);
+  // Sums of whole pixel values: at most 255 x scale^2 per cell (102,000 at
+  // the route's largest scale of 20), so 32 bits are exact - and half the
+  // memory of Float64 when a full-resolution layer is 36.8 million cells.
+  const acc = new Uint32Array(outW * outH);
   const total = width * height;
   let pixel = 0;
   let value = 0;
