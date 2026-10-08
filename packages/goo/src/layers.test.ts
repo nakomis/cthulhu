@@ -31,6 +31,28 @@ describe('the .goo header', () => {
   it('declines a file that is not a .goo', () => {
     expect(parseGooHeader(Buffer.from('CTB-ish rubbish'.repeat(20_000)))).toBeUndefined();
   });
+
+  it("reads DragonFruit's .goo, which says V1.2 with the same magic and layout", async () => {
+    const dragonfruit = syntheticGoo({
+      width: W,
+      height: H,
+      layers: [(x) => x < 100],
+      version: 'V1.2',
+      machineName: 'Mars 5 Ultra',
+    });
+    const header = parseGooHeader(dragonfruit.subarray(0, HEADER_BYTES));
+    expect(header).toMatchObject({ machineName: 'Mars 5 Ultra', layerCount: 1, resolutionX: W });
+    const layers = await indexLayers(
+      async (offset, length) => dragonfruit.subarray(offset, offset + length),
+      header!,
+    );
+    expect(layers).toHaveLength(1);
+  });
+
+  it('declines a version whose layout has not been checked', () => {
+    const other = syntheticGoo({ width: W, height: H, layers: [() => true], version: 'V2.0' });
+    expect(parseGooHeader(other.subarray(0, HEADER_BYTES))).toBeUndefined();
+  });
 });
 
 describe('layers', () => {

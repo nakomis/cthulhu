@@ -10,6 +10,8 @@ export interface SyntheticGooOptions {
   layerHeightMm?: number;
   printTimeS?: number;
   machineName?: string;
+  /** The version string; "V3.0" (Chitubox) unless given, e.g. "V1.2" (DragonFruit). */
+  version?: string;
 }
 
 /**
@@ -23,7 +25,7 @@ export interface SyntheticGooOptions {
 export function syntheticGoo(options: SyntheticGooOptions): Buffer {
   const { width, height, layers } = options;
   const header = Buffer.alloc(OFFSETS.settings + 176);
-  header.write('V3.0', 0, 'latin1');
+  header.write(options.version ?? 'V3.0', 0, 'latin1');
   header.set(GOO_MAGIC, 4);
   header.write(options.machineName ?? 'ELEGOO Mars 5 Ultra', 4 + 8 + 32 + 24 + 24, 'latin1');
   header.write('\r\n', OFFSETS.bigPreview - 2, 'latin1');
