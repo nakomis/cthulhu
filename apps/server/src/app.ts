@@ -288,22 +288,33 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   // PNG when ready; 202 with progress while the print file is still coming
   // from the printer, so the page can say so rather than show nothing.
-  app.get<{ Querystring: { layer?: string } }>('/api/print/layer', async (request, reply) => {
-    const task = currentTask();
-    if (!printView || !task) return reply.code(404).send({ error: 'Nothing printing' });
-    const asked = Number(request.query.layer);
-    const index = Number.isInteger(asked) && asked >= 0 ? asked : task.currentLayer;
-    const result = await printView.layer(task.address, task.taskId, index);
-    if (result.state === 'ready') {
-      return reply
-        .type('image/png')
-        .header('X-Layer', String(result.layer))
-        .header('Cache-Control', 'no-cache')
-        .send(result.png);
-    }
-    if (result.state === 'downloading') return reply.code(202).send(result);
-    return reply.code(502).send({ error: result.error });
-  });
+  //
+  // `scale` (1-20, default 10) is how far to shrink the 8520 x 4320 layer:
+  // the Status box wants 852 x 432, the lightbox more, and scale=1 is every
+  // pixel the LCD shows.
+  app.get<{ Querystring: { layer?: string; scale?: string } }>(
+    '/api/print/layer',
+    async (request, reply) => {
+      const scale = parseScale(request.query.scale);
+      if (scale === 'invalid') {
+        return reply.code(400).send({ error: 'scale must be a whole number from 1 to 20' });
+      }
+      const task = currentTask();
+      if (!printView || !task) return reply.code(404).send({ error: 'Nothing printing' });
+      const asked = Number(request.query.layer);
+      const index = Number.isInteger(asked) && asked >= 0 ? asked : task.currentLayer;
+      const result = await printView.layer(task.address, task.taskId, index, scale);
+      if (result.state === 'ready') {
+        return reply
+          .type('image/png')
+          .header('X-Layer', String(result.layer))
+          .header('Cache-Control', 'no-cache')
+          .send(result.png);
+      }
+      if (result.state === 'downloading') return reply.code(202).send(result);
+      return reply.code(502).send({ error: result.error });
+    },
+  );
 
   // ---- Time-lapses: made by the camera service, archived to the share ---
   //
@@ -676,4 +687,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   }
 
   return app;
+}
+
+/**
+ * The layer route's `scale`: undefined when not given (the server's default),
+ * 'invalid' for anything but a plain whole number from 1 to 20.
+ */
+export function parseScale(raw: string | undefined): number | undefined | 'invalid' {
+  if (raw === undefined) return undefined;
+  if (!/^\d{1,2}$/.test(raw)) return 'invalid';
+  const scale = Number(raw);
+  return scale >= 1 && scale <= 20 ? scale : 'invalid';
 }

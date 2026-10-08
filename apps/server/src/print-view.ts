@@ -102,8 +102,20 @@ export class PrintView {
     return this.preparing;
   }
 
-  /** Layer `index` (0-based: the printer's CurrentLayer) of a task. */
-  async layer(address: string, taskId: string, index: number): Promise<LayerResult> {
+  /**
+   * Layer `index` (0-based: the printer's CurrentLayer) of a task.
+   *
+   * `scale` overrides the configured shrink factor for one request - the
+   * lightbox asks for a bigger picture than the Status box. Only the default
+   * scale is remembered: a full-resolution layer is a megabyte or more of
+   * PNG, and keeping one per task for the odd lightbox is not worth it.
+   */
+  async layer(
+    address: string,
+    taskId: string,
+    index: number,
+    scale?: number,
+  ): Promise<LayerResult> {
     void this.prepare(address, taskId);
     const task = this.task;
     if (!task || task.taskId !== taskId) return { state: 'failed', error: 'No such task' };
@@ -112,7 +124,11 @@ export class PrintView {
 
     const { header, refs } = task.ready;
     const layer = Math.max(0, Math.min(index, refs.length - 1));
-    if (task.last?.layer === layer) return { state: 'ready', layer, png: task.last.png };
+    const usual = this.options.scale ?? 10;
+    const factor = scale ?? usual;
+    const cacheable = factor === usual;
+    if (cacheable && task.last?.layer === layer)
+      return { state: 'ready', layer, png: task.last.png };
     const ref = refs[layer] as LayerRef;
     const handle = await open(task.file);
     try {
@@ -123,10 +139,10 @@ export class PrintView {
         decodeLayer(data, {
           width: header.resolutionX,
           height: header.resolutionY,
-          scale: this.options.scale ?? 10,
+          scale: factor,
         }),
       );
-      task.last = { layer, png };
+      if (cacheable) task.last = { layer, png };
       return { state: 'ready', layer, png };
     } finally {
       await handle.close();
