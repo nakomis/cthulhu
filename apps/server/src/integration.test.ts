@@ -700,6 +700,55 @@ describe('uploading a realistically-sized file', () => {
     expect(layer.statusCode).toBe(200);
     expect(layer.headers['content-type']).toBe('image/png');
     expect(layer.headers['x-layer']).toBe('0');
+    // 80 x 40, shrunk tenfold by default.
+    expect(pngSize(layer.rawPayload)).toEqual({ width: 8, height: 4 });
+  });
+
+  it('renders the layer at the scale asked for, within 1 to 20', async () => {
+    await settle();
+    const goo = syntheticGoo({ width: 80, height: 40, layers: [() => true, () => false] });
+    await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'scaled.goo' },
+      payload: goo,
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/print',
+      payload: { filename: '/local/scaled.goo' },
+    });
+    await waitFor(
+      () => store.snapshot().print.taskId !== undefined && store.snapshot().print.taskId !== '',
+    );
+    const get = async (query: string) => {
+      let res = await app.inject({ method: 'GET', url: `/api/print/layer?${query}` });
+      for (let i = 0; i < 50 && res.statusCode === 202; i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+        res = await app.inject({ method: 'GET', url: `/api/print/layer?${query}` });
+      }
+      return res;
+    };
+
+    const small = await get('layer=0');
+    expect(pngSize(small.rawPayload)).toEqual({ width: 8, height: 4 });
+    const large = await get('layer=0&scale=2');
+    expect(large.statusCode).toBe(200);
+    expect(large.headers['cache-control']).toBe('no-cache');
+    expect(pngSize(large.rawPayload)).toEqual({ width: 40, height: 20 });
+    expect(pngSize((await get('layer=0&scale=1')).rawPayload)).toEqual({ width: 80, height: 40 });
+    expect(pngSize((await get('layer=0&scale=20')).rawPayload)).toEqual({ width: 4, height: 2 });
+    // The big render was not remembered in place of the usual one.
+    expect(pngSize((await get('layer=0')).rawPayload)).toEqual({ width: 8, height: 4 });
+
+    for (const bad of ['0', '21', '-1', '2.5', 'abc', '', '1e1', '010']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/print/layer?layer=0&scale=${encodeURIComponent(bad)}`,
+      });
+      expect(res.statusCode, `scale=${bad}`).toBe(400);
+      expect(res.json()).toEqual({ error: 'scale must be a whole number from 1 to 20' });
+    }
   });
 
   it('still rejects a non-.goo/.ctb file, however large', async () => {
@@ -713,3 +762,8 @@ describe('uploading a realistically-sized file', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+/** A PNG's dimensions, from its IHDR chunk. */
+function pngSize(png: Buffer): { width: number; height: number } {
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+}

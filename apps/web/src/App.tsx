@@ -3,6 +3,7 @@ import { api, type PrinterView } from './api.js';
 import { Camera } from './Camera.js';
 import { Files } from './Files.js';
 import { Layer } from './Layer.js';
+import { Lightbox, LightboxImage } from './Lightbox.js';
 import { MagicFiles } from './MagicFiles.js';
 import {
   canPause,
@@ -214,12 +215,19 @@ export function App({ fetchStatus = api.status, pollMs = 2000, socketFactory }: 
 function Preview({ taskId }: { taskId: string }) {
   const [missing, setMissing] = useState(false);
   if (missing) return null;
+  const src = `/api/print/thumbnail?task=${encodeURIComponent(taskId)}`;
   return (
-    <img
-      src={`/api/print/thumbnail?task=${encodeURIComponent(taskId)}`}
-      alt="Preview of the print"
-      onError={() => setMissing(true)}
-      className="h-20 w-28 shrink-0 rounded bg-black object-contain sm:h-28 sm:w-36"
-    />
+    <Lightbox
+      name="preview of the print"
+      caption="The printer's thumbnail of the print"
+      full={<LightboxImage src={src} alt="Preview of the print, full size" pixelated />}
+    >
+      <img
+        src={src}
+        alt="Preview of the print"
+        onError={() => setMissing(true)}
+        className="h-20 w-28 shrink-0 rounded bg-black object-contain sm:h-28 sm:w-36"
+      />
+    </Lightbox>
   );
 }

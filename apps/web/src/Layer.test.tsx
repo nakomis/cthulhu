@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { Layer } from './Layer.js';
+import { Layer, LIGHTBOX_SCALE } from './Layer.js';
 
 const png = () =>
   new Response(new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }));
@@ -56,5 +57,137 @@ describe('Layer', () => {
     await waitFor(() =>
       expect(screen.getByRole('status')).toHaveTextContent('No layer image for this print.'),
     );
+  });
+
+  it('opens the layer it is showing, larger, with a link to every pixel', async () => {
+    let release: (r: Response) => void = () => {};
+    const fetchLayer = vi
+      .fn<(layer: number, scale?: number) => Promise<Response>>()
+      .mockImplementationOnce(async () => png())
+      .mockImplementationOnce(() => new Promise<Response>((r) => (release = r)));
+    render(<Layer layer={372} totalLayer={893} fetchLayer={fetchLayer} />);
+    const thumb = await screen.findByRole('img', { name: 'Layer 373 of the print' });
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show layer 373 of the print full size' }),
+    );
+    expect(fetchLayer).toHaveBeenLastCalledWith(372, LIGHTBOX_SCALE);
+    const dialog = screen.getByRole('dialog', { name: 'Layer 373 of the print' });
+    expect(dialog).toHaveAccessibleDescription('Layer 373 of 893');
+
+    // The small one stands in while the big one renders: never a blank box.
+    const standIn = screen.getByRole('img', {
+      name: 'Layer 373 of the print, small while the full size loads',
+    });
+    expect(standIn).toHaveAttribute('src', thumb.getAttribute('src'));
+    expect(screen.getByText('Loading the full-size layer…')).toBeInTheDocument();
+
+    release(png());
+    const big = await screen.findByRole('img', { name: 'Layer 373 of the print, full size' });
+    expect(big).toHaveAttribute('data-scale', String(LIGHTBOX_SCALE));
+    expect(big.getAttribute('src')).not.toBe(thumb.getAttribute('src'));
+    expect(screen.queryByText('Loading the full-size layer…')).not.toBeInTheDocument();
+
+    const link = screen.getByRole('link', { name: 'Open full resolution' });
+    expect(link).toHaveAttribute('href', '/api/print/layer?layer=372&scale=1');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('holds the opened layer still while the print moves on', async () => {
+    const fetchLayer = vi.fn(async (_layer: number, _scale?: number) => png());
+    const { rerender } = render(<Layer layer={4} totalLayer={10} fetchLayer={fetchLayer} />);
+    await screen.findByRole('img', { name: 'Layer 5 of the print' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show layer 5 of the print full size' }),
+    );
+    await waitFor(() => expect(fetchLayer).toHaveBeenLastCalledWith(4, LIGHTBOX_SCALE));
+
+    rerender(<Layer layer={5} totalLayer={10} fetchLayer={fetchLayer} />);
+    await waitFor(() => expect(fetchLayer).toHaveBeenLastCalledWith(5));
+    expect(screen.getByRole('dialog', { name: 'Layer 5 of the print' })).toBeInTheDocument();
+    expect(fetchLayer).not.toHaveBeenCalledWith(5, LIGHTBOX_SCALE);
+  });
+
+  it('keeps the small layer up, and says why, when the big one cannot be had', async () => {
+    const fetchLayer = vi
+      .fn<(layer: number, scale?: number) => Promise<Response>>()
+      .mockImplementationOnce(async () => png())
+      .mockImplementationOnce(async () => new Response('', { status: 502 }));
+    render(<Layer layer={0} totalLayer={10} fetchLayer={fetchLayer} />);
+    await screen.findByRole('img', { name: 'Layer 1 of the print' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show layer 1 of the print full size' }),
+    );
+    expect(await screen.findByText('The full-size layer is not available.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Layer 1 of the print, small while the full size loads' }),
+    ).toBeInTheDocument();
+  });
+
+  it('waits, saying so, while the print file is still coming from the printer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fetchLayer = vi
+        .fn<(layer: number, scale?: number) => Promise<Response>>()
+        .mockImplementationOnce(async () => png())
+        .mockImplementationOnce(async () =>
+          Response.json({ state: 'downloading', received: 1, total: 2 }, { status: 202 }),
+        )
+        .mockImplementationOnce(async () => png());
+      render(<Layer layer={0} totalLayer={10} fetchLayer={fetchLayer} />);
+      await screen.findByRole('img', { name: 'Layer 1 of the print' });
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Show layer 1 of the print full size' }),
+      );
+      expect(
+        await screen.findByText('Fetching the print file from the printer…'),
+      ).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(1500);
+      const big = await screen.findByRole('img', { name: 'Layer 1 of the print, full size' });
+      expect(big).toHaveAttribute('data-scale', String(LIGHTBOX_SCALE));
+      expect(fetchLayer).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('frees the big image when closed', async () => {
+    const fetchLayer = vi.fn(async (_layer: number, _scale?: number) => png());
+    render(<Layer layer={0} totalLayer={10} fetchLayer={fetchLayer} />);
+    await screen.findByRole('img', { name: 'Layer 1 of the print' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show layer 1 of the print full size' }),
+    );
+    const big = await screen.findByRole('img', { name: 'Layer 1 of the print, full size' });
+    await waitFor(() => expect(big).toHaveAttribute('data-scale', String(LIGHTBOX_SCALE)));
+    const src = big.getAttribute('src');
+    await userEvent.keyboard('{Escape}');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(src);
+  });
+
+  it('keeps the stand-in alive while open, however far the print moves on', async () => {
+    // The big render never arrives, so the dialog keeps showing the stand-in.
+    const fetchLayer = vi.fn((_layer: number, scale?: number) =>
+      scale ? new Promise<Response>(() => {}) : Promise.resolve(png()),
+    );
+    const { rerender } = render(<Layer layer={0} totalLayer={10} fetchLayer={fetchLayer} />);
+    await screen.findByRole('img', { name: 'Layer 1 of the print' });
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Show layer 1 of the print full size' }),
+    );
+    const standIn = await screen.findByRole('img', {
+      name: 'Layer 1 of the print, small while the full size loads',
+    });
+    const src = standIn.getAttribute('src') as string;
+    vi.mocked(URL.revokeObjectURL).mockClear();
+    for (const layer of [1, 2, 3]) {
+      rerender(<Layer layer={layer} totalLayer={10} fetchLayer={fetchLayer} />);
+      await waitFor(() => expect(fetchLayer).toHaveBeenCalledWith(layer));
+    }
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalled());
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(src);
+    expect(standIn).toHaveAttribute('src', src);
+    await userEvent.keyboard('{Escape}');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(src);
   });
 });
