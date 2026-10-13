@@ -95,6 +95,53 @@ describe('PostgresHistory', () => {
     expect(await history.list()).toEqual([]);
   });
 
+  describe('recordFinished (CTHU-20)', () => {
+    it('adds a row for an unrecorded task, with no times', async () => {
+      const history = await PostgresHistory.create(db);
+      await history.recordFinished('t1', 'idol.goo', 30, 'complete');
+      const [row] = await history.list();
+      expect(row).toMatchObject({
+        taskId: 't1',
+        filename: 'idol.goo',
+        totalLayer: 30,
+        outcome: 'complete',
+        startedAt: null,
+        finishedAt: null,
+      });
+    });
+
+    it('leaves an already-recorded task alone', async () => {
+      const history = await PostgresHistory.create(db);
+      await history.startPrint('t1', 'idol.goo', 30, '2026-09-24T10:00:00.000Z');
+      await history.finishPrint('t1', 'complete');
+      await history.recordFinished('t1', 'idol.goo', 30, 'stopped');
+      await history.recordFinished('t1', 'idol.goo', 30, 'stopped');
+      const prints = await history.list();
+      expect(prints).toHaveLength(1);
+      expect(prints[0]).toMatchObject({ outcome: 'complete' });
+    });
+
+    it('closes the open row of a task it saw start, keeping its start', async () => {
+      const history = await PostgresHistory.create(db);
+      await history.startPrint('t1', 'idol.goo', 30, '2026-09-24T10:00:00.000Z');
+      await history.recordFinished('t1', 'idol.goo', 30, 'stopped');
+      const prints = await history.list();
+      expect(prints).toHaveLength(1);
+      expect(prints[0]).toMatchObject({
+        outcome: 'stopped',
+        startedAt: '2026-09-24T10:00:00.000Z',
+        finishedAt: null,
+      });
+    });
+
+    it('is not mistaken for an open row by a later finishPrint', async () => {
+      const history = await PostgresHistory.create(db);
+      await history.recordFinished('t1', 'idol.goo', 30, 'complete');
+      await history.finishPrint(undefined, 'stopped');
+      expect(await history.list()).toMatchObject([{ outcome: 'complete', finishedAt: null }]);
+    });
+  });
+
   it('creating the store twice against the same database is idempotent', async () => {
     await PostgresHistory.create(db);
     const again = await PostgresHistory.create(db);

@@ -100,6 +100,20 @@ export interface StoreEvents {
   ];
   /** Emitted once per print completion, for notifications and history. */
   printFinished: [{ filename: string | undefined; taskId: string | undefined }];
+  /**
+   * A print first seen only once it was over: the server was down, or not yet
+   * connected, while it ran. For history alone - nobody wants a "Print
+   * finished" notification for a print that ended hours ago. Carries only
+   * what the status frame reports; it says how long the print ran, not when.
+   */
+  printSeenFinished: [
+    {
+      filename: string | undefined;
+      taskId: string;
+      totalLayer: number | undefined;
+      outcome: 'complete' | 'stopped';
+    },
+  ];
 }
 
 /**
@@ -199,6 +213,25 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
         // mid-print, or the print began before it connected. CurrentTicks is
         // the printer's elapsed print time in ms, so work back from it.
         startedAt: new Date(Date.now() - (info.currentTicks ?? 0)).toISOString(),
+      });
+    }
+
+    // The other half of that guard: a taskId first seen already Complete or
+    // Stopped is a print that ran while we were not looking, on startup or
+    // after a reconnect. Without this it never reached history (CTHU-20).
+    // Idle is deliberately not enough: once the printer drops to Idle it
+    // blanks the TaskId, and a row with no taskId could not be told apart
+    // from the same print on the next restart.
+    if (
+      info.taskId &&
+      info.taskId !== previousTask &&
+      (info.status === PrintStatus.Complete || info.status === PrintStatus.Stopped)
+    ) {
+      this.emit('printSeenFinished', {
+        filename: info.filename,
+        taskId: info.taskId,
+        totalLayer: info.totalLayer,
+        outcome: info.status === PrintStatus.Complete ? 'complete' : 'stopped',
       });
     }
 

@@ -108,6 +108,62 @@ describe('printStarted', () => {
   });
 });
 
+describe('printSeenFinished', () => {
+  it('fires for an unseen taskId already Complete or Stopped, with what the frame says', () => {
+    const store = new PrinterStore();
+    const seen = vi.fn();
+    store.on('printSeenFinished', seen);
+
+    store.applyStatus(status({ taskId: 'done', status: PrintStatus.Complete, currentLayer: 120 }));
+    store.applyStatus(status({ taskId: 'halted', status: PrintStatus.Stopped }));
+
+    expect(seen.mock.calls.map((c) => c[0])).toEqual([
+      { filename: 'hanger.goo', taskId: 'done', totalLayer: 120, outcome: 'complete' },
+      { filename: 'hanger.goo', taskId: 'halted', totalLayer: 120, outcome: 'stopped' },
+    ]);
+  });
+
+  it('fires once, however many frames repeat it, and sends no notification', () => {
+    const store = new PrinterStore();
+    const seen = vi.fn();
+    const finished = vi.fn();
+    store.on('printSeenFinished', seen);
+    store.on('printFinished', finished);
+
+    store.applyStatus(status({ taskId: 'done', status: PrintStatus.Complete }));
+    store.applyStatus(status({ taskId: 'done', status: PrintStatus.Complete }));
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(finished).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire for a print it watched finish - printFinished covers that', () => {
+    const store = new PrinterStore();
+    const seen = vi.fn();
+    store.on('printSeenFinished', seen);
+
+    store.applyStatus(status({ status: PrintStatus.Exposuring }));
+    store.applyStatus(status({ status: PrintStatus.Complete }));
+
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire for Idle, where the real printer has blanked the TaskId', () => {
+    // From the rook capture: hours after Complete the printer drops to Idle
+    // with the last file and layer counts still set but TaskId "". Nothing
+    // there tells this print apart from the same one on the next restart.
+    const store = new PrinterStore();
+    const seen = vi.fn();
+    store.on('printSeenFinished', seen);
+
+    store.applyStatus(
+      status({ status: PrintStatus.Idle, taskId: undefined, currentLayer: 120, totalLayer: 120 }),
+    );
+
+    expect(seen).not.toHaveBeenCalled();
+  });
+});
+
 describe('what the real Mars 5 Ultra sends', () => {
   it('labels the Stopping that ends every normal print as Finishing', () => {
     // A completed print passes through status 7 for ~25 seconds after its

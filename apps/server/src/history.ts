@@ -11,6 +11,14 @@ export interface PrintRecord {
 }
 
 /**
+ * A row still waiting for its print to end. finished_at alone is not enough:
+ * a print recorded only after it ended (recordFinished) has no finish time we
+ * can stand behind, yet is not open, and must not be closed again by the next
+ * print's finishPrint. Shared with PostgresHistory, whose SQL is the same.
+ */
+export const OPEN = "finished_at IS NULL AND outcome = 'printing'";
+
+/**
  * Print history, kept somewhere that survives a restart.
  *
  * Two implementations: SqliteHistory (below), the default and the only one
@@ -27,6 +35,18 @@ export interface HistoryStore {
     startedAt?: string,
   ): Promise<void>;
   finishPrint(taskId: string | undefined, outcome: 'complete' | 'stopped' | 'error'): Promise<void>;
+  /**
+   * A print first seen only once it was over (CTHU-20). Closes the task's open
+   * row if there is one - a server that went down mid-print - and otherwise
+   * adds a row, unless the task is already recorded. Times stay null: the
+   * printer reports how long the print ran, not when it started or ended.
+   */
+  recordFinished(
+    taskId: string,
+    filename: string | undefined,
+    totalLayer: number | undefined,
+    outcome: 'complete' | 'stopped',
+  ): Promise<void>;
   list(limit?: number): Promise<PrintRecord[]>;
   close(): Promise<void>;
 }
@@ -98,24 +118,43 @@ export class SqliteHistory implements HistoryStore {
     const now = new Date().toISOString();
     if (taskId) {
       this.db
-        .prepare(
-          'UPDATE prints SET finished_at = ?, outcome = ? WHERE task_id = ? AND finished_at IS NULL',
-        )
+        .prepare(`UPDATE prints SET finished_at = ?, outcome = ? WHERE task_id = ? AND ${OPEN}`)
         .run(now, outcome, taskId);
       return Promise.resolve();
     }
     this.db
       .prepare(
-        'UPDATE prints SET finished_at = ?, outcome = ? WHERE id = (SELECT id FROM prints WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1)',
+        `UPDATE prints SET finished_at = ?, outcome = ? WHERE id = (SELECT id FROM prints WHERE ${OPEN} ORDER BY id DESC LIMIT 1)`,
       )
       .run(now, outcome);
     return Promise.resolve();
   }
 
+  recordFinished(
+    taskId: string,
+    filename: string | undefined,
+    totalLayer: number | undefined,
+    outcome: 'complete' | 'stopped',
+  ): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    if (this.openRowFor(taskId)) {
+      // finished_at stays null: it ended some time while we were away.
+      this.db
+        .prepare(`UPDATE prints SET outcome = ? WHERE task_id = ? AND ${OPEN}`)
+        .run(outcome, taskId);
+      return Promise.resolve();
+    }
+    if (this.db.prepare('SELECT id FROM prints WHERE task_id = ?').get(taskId) !== undefined) {
+      return Promise.resolve();
+    }
+    this.db
+      .prepare('INSERT INTO prints (task_id, filename, outcome, total_layer) VALUES (?, ?, ?, ?)')
+      .run(taskId, filename ?? null, outcome, totalLayer ?? null);
+    return Promise.resolve();
+  }
+
   private openRowFor(taskId: string): boolean {
-    const row = this.db
-      .prepare('SELECT id FROM prints WHERE task_id = ? AND finished_at IS NULL')
-      .get(taskId);
+    const row = this.db.prepare(`SELECT id FROM prints WHERE task_id = ? AND ${OPEN}`).get(taskId);
     return row !== undefined;
   }
 
