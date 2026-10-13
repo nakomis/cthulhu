@@ -122,6 +122,10 @@ export class PrinterService {
       void this.history?.startPrint(taskId, filename, totalLayer, startedAt);
     });
 
+    this.store.on('printSeenFinished', ({ filename, taskId, totalLayer, outcome }) => {
+      void this.history?.recordFinished(taskId, filename, totalLayer, outcome);
+    });
+
     this.store.on('printFinished', ({ filename, taskId }) => {
       void this.history?.finishPrint(taskId, 'complete');
       // notify() never throws and returns false on failure - which, unlogged,

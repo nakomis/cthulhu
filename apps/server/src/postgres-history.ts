@@ -1,4 +1,4 @@
-import type { HistoryStore, PrintRecord } from './history.js';
+import { type HistoryStore, OPEN, type PrintRecord } from './history.js';
 
 /**
  * The minimal shape PostgresHistory needs from a Postgres client: exactly
@@ -76,23 +76,45 @@ export class PostgresHistory implements HistoryStore {
     const now = new Date().toISOString();
     if (taskId) {
       await this.db.query(
-        'UPDATE prints SET finished_at = $1, outcome = $2 WHERE task_id = $3 AND finished_at IS NULL',
+        `UPDATE prints SET finished_at = $1, outcome = $2 WHERE task_id = $3 AND ${OPEN}`,
         [now, outcome, taskId],
       );
       return;
     }
     await this.db.query(
       `UPDATE prints SET finished_at = $1, outcome = $2
-       WHERE id = (SELECT id FROM prints WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1)`,
+       WHERE id = (SELECT id FROM prints WHERE ${OPEN} ORDER BY id DESC LIMIT 1)`,
       [now, outcome],
     );
   }
 
-  private async openRowFor(taskId: string): Promise<boolean> {
-    const { rows } = await this.db.query(
-      'SELECT id FROM prints WHERE task_id = $1 AND finished_at IS NULL',
-      [taskId],
+  async recordFinished(
+    taskId: string,
+    filename: string | undefined,
+    totalLayer: number | undefined,
+    outcome: 'complete' | 'stopped',
+  ): Promise<void> {
+    if (this.closed) return;
+    if (await this.openRowFor(taskId)) {
+      // finished_at stays null: it ended some time while we were away.
+      await this.db.query(`UPDATE prints SET outcome = $1 WHERE task_id = $2 AND ${OPEN}`, [
+        outcome,
+        taskId,
+      ]);
+      return;
+    }
+    const { rows } = await this.db.query('SELECT id FROM prints WHERE task_id = $1', [taskId]);
+    if (rows.length > 0) return;
+    await this.db.query(
+      'INSERT INTO prints (task_id, filename, outcome, total_layer) VALUES ($1, $2, $3, $4)',
+      [taskId, filename ?? null, outcome, totalLayer ?? null],
     );
+  }
+
+  private async openRowFor(taskId: string): Promise<boolean> {
+    const { rows } = await this.db.query(`SELECT id FROM prints WHERE task_id = $1 AND ${OPEN}`, [
+      taskId,
+    ]);
     return rows.length > 0;
   }
 

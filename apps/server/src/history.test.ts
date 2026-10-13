@@ -44,3 +44,39 @@ describe('createHistoryStore', () => {
     );
   });
 });
+
+describe('SqliteHistory.recordFinished (CTHU-20)', () => {
+  it('adds a row for an unrecorded task once, with no times', async () => {
+    const history = new SqliteHistory(join(dir, 'test.sqlite'));
+    await history.recordFinished('t1', 'idol.goo', 30, 'complete');
+    await history.recordFinished('t1', 'idol.goo', 30, 'complete');
+    expect(await history.list()).toMatchObject([
+      { taskId: 't1', filename: 'idol.goo', totalLayer: 30, outcome: 'complete', startedAt: null },
+    ]);
+    await history.close();
+  });
+
+  it('closes the open row of a task it saw start, keeping its start', async () => {
+    const history = new SqliteHistory(join(dir, 'test.sqlite'));
+    await history.startPrint('t1', 'idol.goo', 30, '2026-09-24T10:00:00.000Z');
+    await history.recordFinished('t1', 'idol.goo', 30, 'stopped');
+    expect(await history.list()).toMatchObject([
+      { outcome: 'stopped', startedAt: '2026-09-24T10:00:00.000Z', finishedAt: null },
+    ]);
+    await history.close();
+  });
+
+  it('is not mistaken for an open row by a later finishPrint', async () => {
+    const history = new SqliteHistory(join(dir, 'test.sqlite'));
+    await history.recordFinished('t1', 'idol.goo', 30, 'complete');
+    await history.finishPrint(undefined, 'stopped');
+    expect(await history.list()).toMatchObject([{ outcome: 'complete', finishedAt: null }]);
+    await history.close();
+  });
+
+  it('is a no-op once closed', async () => {
+    const history = new SqliteHistory(join(dir, 'test.sqlite'));
+    await history.close();
+    await expect(history.recordFinished('t1', 'idol.goo', 30, 'complete')).resolves.toBeUndefined();
+  });
+});
