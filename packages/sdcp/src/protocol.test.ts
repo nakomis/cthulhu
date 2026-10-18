@@ -3,6 +3,8 @@ import {
   buildRequest,
   Cmd,
   MAX_VIDEO_STREAMS,
+  PrintError,
+  printErrorMessage,
   readMisspelled,
   START_PRINT_ACK_MESSAGES,
   StartPrintAck,
@@ -104,5 +106,24 @@ describe('video stream limit', () => {
   // Not a style preference: the camera proxy design depends on this being 1.
   it('is one, which is why the server must multiplex', () => {
     expect(MAX_VIDEO_STREAMS).toBe(2);
+  });
+});
+
+describe('printErrorMessage', () => {
+  it('says nothing when there is no error', () => {
+    expect(printErrorMessage(undefined)).toBeUndefined();
+    expect(printErrorMessage(PrintError.None)).toBeUndefined();
+  });
+
+  it('points at the vat as well as the file for error 2', () => {
+    // An overfilled vat stops the Mars 5 Ultra after homing with error 2, and
+    // only its own screen says why (CTHU-39).
+    expect(printErrorMessage(PrintError.FileReadFailed)).toBe(
+      "the printer could not read the file, or the resin is above the vat's maximum: check the printer's screen",
+    );
+  });
+
+  it('never invents a reason for an unknown code', () => {
+    expect(printErrorMessage(99)).toBe('unknown error 99');
   });
 });

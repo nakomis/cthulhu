@@ -210,3 +210,24 @@ function ratio(current: number | undefined, total: number | undefined): number |
   if (current === undefined || total === undefined || total <= 0) return undefined;
   return Math.min(100, Math.max(0, Math.round((current / total) * 100)));
 }
+
+/**
+ * Every field whose name mentions an error or exception, anywhere in a raw
+ * frame, keyed by its dotted path. Matched by name rather than by a fixed list
+ * because the printer may report a fault the spec never mentions: error 2 also
+ * means "resin over the vat's maximum" on the Mars 5 Ultra, and what else it
+ * sends then is still unknown (CTHU-39, CTHU-40).
+ */
+export function errorFields(raw: unknown): Record<string, unknown> {
+  const found: Record<string, unknown> = {};
+  const walk = (value: unknown, path: string): void => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      const at = path ? `${path}.${key}` : key;
+      if (/error|exception/i.test(key)) found[at] = child;
+      else walk(child, at);
+    }
+  };
+  walk(raw, '');
+  return found;
+}

@@ -93,7 +93,11 @@ export const PrintError = {
 export const PRINT_ERROR_MESSAGES: Record<number, string> = {
   [PrintError.None]: 'none',
   [PrintError.Md5CheckFailed]: 'MD5 check failed — the transfer was corrupt, re-upload',
-  [PrintError.FileReadFailed]: 'the printer could not read the file',
+  // The Mars 5 Ultra also reports 2 when the resin is over the vat's maximum,
+  // and says so only on its own screen: an overfilled vat once passed for a
+  // corrupt file for half an hour (CTHU-39).
+  [PrintError.FileReadFailed]:
+    "the printer could not read the file, or the resin is above the vat's maximum: check the printer's screen",
   [PrintError.ResolutionMismatch]: 'resolution mismatch — sliced for a different printer',
   [PrintError.FormatMismatch]: 'unsupported file format',
   [PrintError.ModelMismatch]: 'model mismatch — sliced for a different machine',

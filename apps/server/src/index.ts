@@ -25,7 +25,9 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  const store = new PrinterStore();
+  const store = new PrinterStore({
+    warn: (msg) => process.stdout.write(`WARN ${msg}\n`),
+  });
 
   let history: HistoryStore | undefined;
   try {
