@@ -14,6 +14,9 @@ export interface PrinterView {
     /** The printer's estimate of the whole print, in ms. */
     totalMs?: number | undefined;
     errorNumber: number | undefined;
+    errorMessage?: string | null;
+    /** An error left from a print already over, on an idle printer. */
+    errorStale?: boolean;
     taskId: string | undefined;
   };
   releaseFilmState: number | undefined;

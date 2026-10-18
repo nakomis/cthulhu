@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MachineStatus, PrintStatus } from './protocol.js';
-import { parseAttributes, parseStatus, remainingMs } from './status.js';
+import { errorFields, parseAttributes, parseStatus, remainingMs } from './status.js';
 
 /**
  * Every frame of a real 1000-layer print on an Elegoo Mars 5 Ultra (firmware
@@ -87,5 +87,18 @@ describe('a real print, frame by frame', () => {
   it('counts release film uses in layers', () => {
     expect(statuses[0]?.releaseFilmUses).toBe(0);
     expect(statuses.at(-1)?.releaseFilmUses).toBe(1000);
+  });
+});
+
+describe('errorFields', () => {
+  it('finds only ErrorNumber, at 0, in a healthy real print', () => {
+    for (const s of statuses)
+      expect(errorFields(s.raw)).toEqual({ 'Status.PrintInfo.ErrorNumber': 0 });
+  });
+
+  it('finds error and exception fields at any depth, by name', () => {
+    expect(
+      errorFields({ A: { ErrorCode: 7, B: { ResinException: 'over max' } }, Other: 1, List: [1] }),
+    ).toEqual({ 'A.ErrorCode': 7, 'A.B.ResinException': 'over max' });
   });
 });

@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
 import {
+  errorFields,
+  MachineStatus,
   type PrinterAttributes,
   type PrinterStatus,
   type PrintInfo,
@@ -27,6 +29,11 @@ export interface PrinterView {
     errorNumber: number | undefined;
     /** What the error number actually means, or null when there is none. */
     errorMessage: string | null;
+    /**
+     * True when the error belongs to a print that is already over and the
+     * printer is idle: a leftover that blocks nothing, not a live fault.
+     */
+    errorStale: boolean;
     taskId: string | undefined;
   };
   releaseFilmState: number | undefined;
@@ -59,6 +66,21 @@ export const PRINT_STATUS_LABELS: Record<number, string> = {
 /** A print that has ended, one way or another. */
 function isTerminal(code: number | undefined): boolean {
   return code === PrintStatus.Complete || code === PrintStatus.Stopped || code === PrintStatus.Idle;
+}
+
+/**
+ * An error left over from a print that has ended, on a printer now idle. The
+ * printer keeps reporting the last print's ErrorNumber until the next one
+ * starts, which should not read as a live fault (CTHU-39).
+ */
+function isStaleError(status: PrinterStatus): boolean {
+  const { errorNumber, status: code } = status.printInfo;
+  return (
+    !!errorNumber &&
+    (code === PrintStatus.Stopped || code === PrintStatus.Complete) &&
+    status.machineStatus.length > 0 &&
+    status.machineStatus.every((s) => s === MachineStatus.Idle)
+  );
 }
 
 export function printStatusLabel(
@@ -140,6 +162,7 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       totalMs: undefined,
       errorNumber: undefined,
       errorMessage: null,
+      errorStale: false,
       taskId: undefined,
     },
     releaseFilmState: undefined,
@@ -153,6 +176,13 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
 
   private lastPrintStatus: number | undefined;
   private lastTaskId: string | undefined;
+  private lastErrorFields: string | undefined;
+  private readonly warn: (msg: string) => void;
+
+  constructor(options: { warn?: (msg: string) => void } = {}) {
+    super();
+    this.warn = options.warn ?? (() => {});
+  }
 
   snapshot(): PrinterView {
     return structuredClone(this.view);
@@ -180,8 +210,10 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
       totalMs: info.totalTicks && info.totalTicks > 0 ? info.totalTicks : undefined,
       errorNumber: info.errorNumber,
       errorMessage: printErrorMessage(info.errorNumber) ?? null,
+      errorStale: isStaleError(status),
       taskId: info.taskId,
     };
+    this.logErrorChange(status);
     // The spec puts these in status; the Mars 5 Ultra sends them only in
     // attributes. Take whichever arrives, and never let an absent field
     // overwrite a value the other frame supplied.
@@ -246,6 +278,25 @@ export class PrinterStore extends EventEmitter<StoreEvents> {
     ) {
       this.emit('printFinished', { filename: info.filename, taskId: info.taskId });
     }
+  }
+
+  /**
+   * The printer's own words, whenever its error fields change. Our reading of
+   * an error number can be wrong - error 2 turned out to mean an overfilled
+   * vat as well as an unreadable file - so keep the raw frames that would
+   * settle it next time (CTHU-39, CTHU-40). The first frame after connecting
+   * is logged only if it already carries a fault.
+   */
+  private logErrorChange(status: PrinterStatus): void {
+    const fields = errorFields(status.raw);
+    const key = JSON.stringify(fields);
+    const previous = this.lastErrorFields;
+    this.lastErrorFields = key;
+    if (key === previous) return;
+    if (previous === undefined && !Object.values(fields).some(Boolean)) return;
+    this.warn(
+      `printer error fields changed: ${key}; status ${JSON.stringify(status.raw)}; attributes ${JSON.stringify(this.view.attributes?.raw ?? null)}`,
+    );
   }
 
   applyAttributes(attributes: PrinterAttributes): void {
