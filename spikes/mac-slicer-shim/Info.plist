@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>CthulhuSlicerShim</string>
+	<key>CFBundleDisplayName</key>
+	<string>Cthulhu Slicer (probe)</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.nakomis.cthulhu.slicer-shim</string>
+	<key>CFBundleExecutable</key>
+	<string>CthulhuSlicerShim</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>0.1</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- Accessory app: no Dock icon, no menu bar. It is a silent probe. -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- Accept ANY document, so whatever format SolidCraft sends is delivered
+	     and we can see it. public.item is the broad supertype (files + folders). -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Any file</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
