@@ -10,6 +10,7 @@ import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
 import { cameraServiceOrigin, TimelapseRecorder } from './timelapse.js';
 import { TimelapseArchiver } from './timelapse-archive.js';
+import { UploadStore } from './uploads.js';
 import { VideoLease } from './video-lease.js';
 import { resolveVideoUrl } from './video-url.js';
 
@@ -134,9 +135,18 @@ async function main(): Promise<void> {
   // printer when missing.
   const dataDir = dirname(config.databasePath);
   const fileMeta = new FileMetaCache({ dir: join(dataDir, 'file-meta'), port: config.uploadPort });
+  // Upload times (small, kept for good - NOT reconstructable from the printer,
+  // so the index.json here wants backing up, unlike the caches above) and the
+  // bytes of recent uploads (a bounded cache, for layer previews).
+  const uploads = new UploadStore({
+    dir: join(dataDir, 'uploads'),
+    maxCacheBytes: config.uploadCacheMaxBytes,
+    log: (line) => process.stdout.write(`${line}\n`),
+  });
   const printView = new PrintView({
     dir: join(dataDir, 'print-files'),
     port: config.uploadPort,
+    findLocal: (filename) => uploads.localPath(filename),
     log: (line) => process.stdout.write(`${line}\n`),
     detail: async (taskId) => {
       const res = await printer.client?.historyTaskDetail([taskId]);
@@ -197,6 +207,7 @@ async function main(): Promise<void> {
     ...(camera ? { camera } : {}),
     fileMeta,
     printView,
+    uploads,
     ...(timelapseBase ? { timelapseBase } : {}),
     ...(timelapseArchiver ? { timelapseArchiver } : {}),
     logger: true,

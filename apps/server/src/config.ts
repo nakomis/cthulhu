@@ -57,6 +57,14 @@ export interface Config {
    * of keycaps runs to hundreds of megabytes.
    */
   maxUploadBytes: number;
+  /**
+   * How many bytes of uploaded .goo files to keep cached on disk, so the
+   * Status panel's layer preview can read them locally instead of fetching
+   * the whole file back from the printer. The oldest uploads are evicted past
+   * this; their upload time is still remembered, for sorting. A few large
+   * plates fit in the 2 GB default.
+   */
+  uploadCacheMaxBytes: number;
   /** Directory of the built SPA. Unset in dev, where Vite serves it. */
   webRoot: string | undefined;
   /**
@@ -141,6 +149,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cameraUrl: env.CAMERA_URL || '',
     uploadPort: intFromEnv(env, 'UPLOAD_PORT', 3030),
     maxUploadBytes: intFromEnv(env, 'MAX_UPLOAD_BYTES', 1024 * 1024 * 1024),
+    uploadCacheMaxBytes: intFromEnv(env, 'UPLOAD_CACHE_MAX_BYTES', 2 * 1024 * 1024 * 1024),
     webRoot: env.WEB_ROOT || undefined,
     timelapseArchiveDir: env.TIMELAPSE_ARCHIVE_DIR || undefined,
     plateZOffsetMm: plateZOffsetFromEnv(env),

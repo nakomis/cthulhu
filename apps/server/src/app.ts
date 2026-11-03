@@ -21,6 +21,7 @@ import type { PrintView } from './print-view.js';
 import type { PrinterService } from './printer.js';
 import type { PrinterStore } from './store.js';
 import type { TimelapseArchiver } from './timelapse-archive.js';
+import type { UploadStore } from './uploads.js';
 import { registerWs } from './ws.js';
 
 export interface BuildAppOptions {
@@ -35,6 +36,8 @@ export interface BuildAppOptions {
   fileMeta?: FileMetaCache;
   /** The current print's thumbnail and layer images. */
   printView?: PrintView;
+  /** Upload times (for sorting) and cached bytes (for layer previews). */
+  uploads?: UploadStore;
   /** The camera service, which records and keeps the time-lapses. */
   timelapseBase?: string;
   /** Archived time-lapses on the share, once TIMELAPSE_ARCHIVE_DIR is set. */
@@ -51,6 +54,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     camera,
     fileMeta,
     printView,
+    uploads,
     timelapseBase,
     timelapseArchiver,
     webRoot,
@@ -96,7 +100,14 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const client = printer?.client;
     if (!client) return reply.code(503).send({ error: 'Not connected to the printer' });
     try {
-      return { files: await listPrintableFiles(client) };
+      const files = await listPrintableFiles(client);
+      // Attach the upload time Cthulhu recorded, so the UI can sort by it.
+      return {
+        files: files.map((f) => {
+          const uploadedAt = uploads?.uploadedAt(f.path);
+          return uploadedAt === undefined ? f : { ...f, uploadedAt };
+        }),
+      };
     } catch (err) {
       return reply.code(502).send({ error: String(err) });
     }
@@ -485,6 +496,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         ...(config.uploadPort ? { port: config.uploadPort } : {}),
       });
       const path = await client.confirmUploaded(filename);
+      // Record the time (for sorting) and keep the bytes (for layer previews).
+      // Guarded: a caching problem must not fail an upload that has succeeded.
+      try {
+        await uploads?.record(path, filename, body);
+      } catch (err) {
+        app.log.warn(`Could not record upload ${filename}: ${String(err)}`);
+      }
       return { ...result, path };
     } catch (err) {
       // A cancelled upload is not a failure to report as one: the caller asked
