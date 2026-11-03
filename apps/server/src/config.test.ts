@@ -27,6 +27,16 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ PRINTER_IP: '', DISCOVERY_ENABLED: 'false' })).toThrow(ConfigError);
   });
 
+  it('defaults the upload cache to 2 GB and takes an override', () => {
+    expect(loadConfig({ PRINTER_IP: '192.168.1.2' }).uploadCacheMaxBytes).toBe(
+      2 * 1024 * 1024 * 1024,
+    );
+    expect(
+      loadConfig({ PRINTER_IP: '192.168.1.2', UPLOAD_CACHE_MAX_BYTES: '500000000' })
+        .uploadCacheMaxBytes,
+    ).toBe(500_000_000);
+  });
+
   it.each(['0', 'no', '-1', 'quite'])('rejects nonsense port %s', (value) => {
     expect(() => loadConfig({ PORT: value, PRINTER_IP: '1.2.3.4' })).toThrow(ConfigError);
   });

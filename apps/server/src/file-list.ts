@@ -6,6 +6,12 @@ export interface PrintableFile {
   storage: 'local' | 'usb';
   /** The folder it sits in, relative to the storage root; '' at the top. */
   folder: string;
+  /**
+   * When Cthulhu uploaded this file, in epoch milliseconds, if it did. Absent
+   * for files put on the printer another way (e.g. a USB stick), which sort
+   * to the end of an upload-time sort.
+   */
+  uploadedAt?: number;
 }
 
 interface Lister {

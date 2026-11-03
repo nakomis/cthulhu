@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
+import { copyFile, mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -32,6 +32,13 @@ export interface PrintViewOptions {
   port: number;
   /** Cmd 321, for the task's file path and thumbnail. */
   detail: (taskId: string) => Promise<TaskDetail | undefined>;
+  /**
+   * A local copy of an uploaded print file by name, if Cthulhu still holds its
+   * bytes. When it does, the file is copied in rather than fetched back from
+   * the printer - saving the ~45 s round trip at the start of every print it
+   * uploaded.
+   */
+  findLocal?: (filename: string) => Promise<string | undefined>;
   fetchImpl?: typeof fetch;
   /** Shrink layers by this factor: 10 turns 8520 x 4320 into 852 x 432. */
   scale?: number;
@@ -163,17 +170,30 @@ export class PrintView {
       if (!name.startsWith(task.taskId)) await rm(join(this.options.dir, name), { force: true });
     }
 
-    const res = await this.fetchImpl(mediaUrl(address, this.options.port, media));
-    if (!res.ok || !res.body) throw new Error(`The printer answered ${res.status} for ${media}`);
-    const length = Number(res.headers.get('content-length'));
-    task.total = Number.isFinite(length) && length > 0 ? length : undefined;
-    const counted = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
-    counted.on('data', (chunk: Buffer) => {
-      task.received += chunk.length;
-    });
     const part = `${task.file}.part`;
-    await pipeline(counted, createWriteStream(part));
-    await rename(part, task.file);
+    const base = media.split('/').pop() ?? media;
+    const local = await this.options.findLocal?.(base);
+    if (local) {
+      // Cthulhu uploaded this file and still holds its bytes: copy them in
+      // rather than pull the whole file back over the printer's WiFi.
+      await copyFile(local, part);
+      await rename(part, task.file);
+      const { size } = await stat(task.file);
+      task.total = size;
+      task.received = size;
+      this.options.log?.(`print view: ${media} from upload cache`);
+    } else {
+      const res = await this.fetchImpl(mediaUrl(address, this.options.port, media));
+      if (!res.ok || !res.body) throw new Error(`The printer answered ${res.status} for ${media}`);
+      const length = Number(res.headers.get('content-length'));
+      task.total = Number.isFinite(length) && length > 0 ? length : undefined;
+      const counted = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+      counted.on('data', (chunk: Buffer) => {
+        task.received += chunk.length;
+      });
+      await pipeline(counted, createWriteStream(part));
+      await rename(part, task.file);
+    }
 
     const handle = await open(task.file);
     try {

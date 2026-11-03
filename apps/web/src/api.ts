@@ -53,6 +53,11 @@ export interface PrinterFile {
   storage: 'local' | 'usb';
   /** Folder relative to the storage root; '' at the top. */
   folder: string;
+  /**
+   * When Cthulhu uploaded this file (epoch ms), if it did. Absent for files
+   * put on the printer another way; those sort to the end of an upload sort.
+   */
+  uploadedAt?: number;
 }
 
 /** Read from the file's own header on the printer. */

@@ -44,7 +44,13 @@ export function Files({
    *  during a delete, which is far too quick to cancel usefully. */
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | undefined>();
+  const [sortBy, setSortBy] = useState<SortKey>(loadSort);
   const input = useRef<HTMLInputElement>(null);
+
+  const changeSort = (key: SortKey) => {
+    setSortBy(key);
+    saveSort(key);
+  };
 
   /**
    * Poll the server for how far the upload has got, only while one is running.
@@ -172,16 +178,34 @@ export function Files({
 
   return (
     <section className="rounded-lg border border-slate-700 p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <h2 className="text-xs uppercase tracking-wider text-slate-400">Files</h2>
-        <button
-          type="button"
-          disabled={working}
-          onClick={() => input.current?.click()}
-          className="rounded border border-slate-600 px-3 py-1 text-sm disabled:opacity-40"
-        >
-          Upload
-        </button>
+        <div className="flex items-center gap-2">
+          <label htmlFor="file-sort" className="sr-only">
+            Sort files
+          </label>
+          <select
+            id="file-sort"
+            aria-label="Sort files"
+            value={sortBy}
+            onChange={(e) => changeSort(e.target.value as SortKey)}
+            className="rounded border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-slate-300"
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={working}
+            onClick={() => input.current?.click()}
+            className="rounded border border-slate-600 px-3 py-1 text-sm disabled:opacity-40"
+          >
+            Upload
+          </button>
+        </div>
         <input
           ref={input}
           type="file"
@@ -220,7 +244,7 @@ export function Files({
         <p className="mt-3 text-sm text-slate-500">No files on the printer.</p>
       ) : (
         <ul className="mt-3 space-y-2">
-          {files.map((f) => (
+          {sortFiles(files, sortBy).map((f) => (
             <li key={f.path} className="flex items-center justify-between gap-3">
               <FilePreview path={f.path} name={f.name} />
               <span className="min-w-0 flex-1">
@@ -399,4 +423,57 @@ export function formatDuration(seconds: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return h > 0 ? `${h} h ${String(m).padStart(2, '0')} m` : `${m} m`;
+}
+
+export type SortKey = 'uploaded-desc' | 'uploaded-asc' | 'name-asc' | 'name-desc';
+
+export const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: 'uploaded-desc', label: 'Newest upload' },
+  { key: 'uploaded-asc', label: 'Oldest upload' },
+  { key: 'name-asc', label: 'Name A–Z' },
+  { key: 'name-desc', label: 'Name Z–A' },
+];
+
+const SORT_KEYS = new Set<SortKey>(SORT_OPTIONS.map((o) => o.key));
+const SORT_STORAGE_KEY = 'cthulhu.fileSort';
+const DEFAULT_SORT: SortKey = 'uploaded-desc';
+
+/**
+ * Sort the file list by the chosen key.
+ *
+ * Numeric-aware name comparison, so vape-take-2 comes before vape-take-10.
+ * Files Cthulhu never uploaded have no time; whichever way the dated files
+ * run, those sink to the end in name order rather than jumping to the top.
+ */
+export function sortFiles(files: PrinterFile[], key: SortKey): PrinterFile[] {
+  const byName = (a: PrinterFile, b: PrinterFile) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  const copy = [...files];
+  if (key === 'name-asc') return copy.sort(byName);
+  if (key === 'name-desc') return copy.sort((a, b) => byName(b, a));
+  const direction = key === 'uploaded-desc' ? -1 : 1;
+  return copy.sort((a, b) => {
+    if (a.uploadedAt === undefined && b.uploadedAt === undefined) return byName(a, b);
+    if (a.uploadedAt === undefined) return 1;
+    if (b.uploadedAt === undefined) return -1;
+    return (a.uploadedAt - b.uploadedAt) * direction || byName(a, b);
+  });
+}
+
+export function loadSort(): SortKey {
+  try {
+    const stored = localStorage.getItem(SORT_STORAGE_KEY);
+    if (stored && SORT_KEYS.has(stored as SortKey)) return stored as SortKey;
+  } catch {
+    // Private mode or blocked storage: the default is fine.
+  }
+  return DEFAULT_SORT;
+}
+
+function saveSort(key: SortKey): void {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, key);
+  } catch {
+    // Not being able to remember the choice is not worth surfacing.
+  }
 }

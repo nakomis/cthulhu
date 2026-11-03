@@ -1,8 +1,15 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
-import type { UploadProgress } from './api.js';
-import { Files, formatMegabytes, formatRemaining, uploadEstimate } from './Files.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PrinterFile, UploadProgress } from './api.js';
+import {
+  Files,
+  formatMegabytes,
+  formatRemaining,
+  type SortKey,
+  sortFiles,
+  uploadEstimate,
+} from './Files.js';
 
 const file = (name: string, storage: 'local' | 'usb' = 'local', folder = '') => ({
   path: storage === 'local' ? `/local/${name}` : `/usb/${folder ? `${folder}/` : ''}${name}`,
@@ -24,7 +31,9 @@ describe('Files', () => {
     render(<Files listFiles={listFiles} startPrint={startPrint} />);
     await screen.findByText('cthulhu.goo');
 
-    await userEvent.click(screen.getAllByRole('button', { name: 'Print' })[0] as HTMLElement);
+    // Target the file's own row rather than a list position: the list is sorted.
+    const row = screen.getByText('cthulhu.goo').closest('li') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: 'Print' }));
     await waitFor(() => expect(startPrint).toHaveBeenCalledWith('/local/cthulhu.goo'));
     expect(await screen.findByRole('status')).toHaveTextContent('Started /local/cthulhu.goo');
   });
@@ -458,5 +467,83 @@ describe('Files: a failed upload still re-reads the list (CTHU-29)', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('never appeared');
     // ...but the file the printer actually holds is now visible.
     expect(await screen.findByText('calhead.goo')).toBeInTheDocument();
+  });
+});
+
+const dated = (name: string, uploadedAt?: number): PrinterFile => ({
+  path: `/local/${name}`,
+  name,
+  storage: 'local',
+  folder: '',
+  ...(uploadedAt === undefined ? {} : { uploadedAt }),
+});
+
+describe('sortFiles', () => {
+  const files = [
+    dated('old.goo', 100),
+    dated('new.goo', 300),
+    dated('mid.goo', 200),
+    dated('handmade.goo'), // never uploaded through Cthulhu: no time
+  ];
+  const names = (key: SortKey) => sortFiles(files, key).map((f) => f.name);
+
+  it('puts the newest upload first, undated files last', () => {
+    expect(names('uploaded-desc')).toEqual(['new.goo', 'mid.goo', 'old.goo', 'handmade.goo']);
+  });
+
+  it('puts the oldest upload first, undated files still last', () => {
+    expect(names('uploaded-asc')).toEqual(['old.goo', 'mid.goo', 'new.goo', 'handmade.goo']);
+  });
+
+  it('sorts by name both ways', () => {
+    expect(names('name-asc')).toEqual(['handmade.goo', 'mid.goo', 'new.goo', 'old.goo']);
+    expect(names('name-desc')).toEqual(['old.goo', 'new.goo', 'mid.goo', 'handmade.goo']);
+  });
+
+  it('orders names numerically, not lexically', () => {
+    const n = [dated('take-10.goo', 1), dated('take-2.goo', 2)];
+    expect(sortFiles(n, 'name-asc').map((f) => f.name)).toEqual(['take-2.goo', 'take-10.goo']);
+  });
+
+  it('does not mutate the input array', () => {
+    const input = [dated('b.goo', 1), dated('a.goo', 2)];
+    sortFiles(input, 'name-asc');
+    expect(input.map((f) => f.name)).toEqual(['b.goo', 'a.goo']);
+  });
+});
+
+describe('Files sort control', () => {
+  beforeEach(() => localStorage.clear());
+
+  const scrambled = async () => [
+    dated('old.goo', 100),
+    dated('new.goo', 300),
+    dated('handmade.goo'),
+    dated('mid.goo', 200),
+  ];
+  const deletableOrder = () =>
+    screen
+      .getAllByRole('button', { name: /^Delete / })
+      .map((b) => (b.getAttribute('aria-label') ?? '').replace('Delete ', ''));
+
+  it('defaults to newest upload first, undated last', async () => {
+    render(<Files listFiles={scrambled} fileMeta={async () => undefined} />);
+    await screen.findByText('new.goo');
+    expect(deletableOrder()).toEqual(['new.goo', 'mid.goo', 'old.goo', 'handmade.goo']);
+  });
+
+  it('reorders when the sort is changed, and remembers the choice', async () => {
+    const { unmount } = render(<Files listFiles={scrambled} fileMeta={async () => undefined} />);
+    await screen.findByText('new.goo');
+
+    await userEvent.selectOptions(screen.getByLabelText('Sort files'), 'name-asc');
+    expect(deletableOrder()).toEqual(['handmade.goo', 'mid.goo', 'new.goo', 'old.goo']);
+
+    // A fresh mount reads the remembered choice from localStorage.
+    unmount();
+    render(<Files listFiles={scrambled} fileMeta={async () => undefined} />);
+    await screen.findByText('new.goo');
+    expect((screen.getByLabelText('Sort files') as HTMLSelectElement).value).toBe('name-asc');
+    expect(deletableOrder()).toEqual(['handmade.goo', 'mid.goo', 'new.goo', 'old.goo']);
   });
 });

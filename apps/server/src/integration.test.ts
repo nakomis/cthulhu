@@ -14,12 +14,14 @@ import { generateZOffsetGcode } from './magic-files.js';
 import { PrintView } from './print-view.js';
 import { PrinterService } from './printer.js';
 import { PrinterStore } from './store.js';
+import { UploadStore } from './uploads.js';
 
 let printer: FakePrinter;
 let service: PrinterService;
 let store: PrinterStore;
 let history: SqliteHistory;
 let app: ReturnType<typeof buildApp>;
+let uploads: UploadStore;
 let dir: string;
 
 beforeEach(async () => {
@@ -52,11 +54,16 @@ beforeEach(async () => {
     discoverImpl: async () => [],
   });
   await service.start();
+  // No findLocal on the PrintView here, so the existing preview/layer tests
+  // keep exercising the fetch-from-printer path; the upload cache has its own
+  // unit test (print-view.test.ts).
+  uploads = new UploadStore({ dir: join(dir, 'uploads'), maxCacheBytes: 50 * 1024 * 1024 });
   app = buildApp({
     config,
     store,
     printer: service,
     history,
+    uploads,
     fileMeta: new FileMetaCache({ dir: join(dir, 'file-meta'), port: printer.wsPort }),
     printView: new PrintView({
       dir: join(dir, 'print-files'),
@@ -222,6 +229,30 @@ describe('file listing', () => {
     await settle();
     const res = await app.inject({ method: 'GET', url: '/api/files' });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('tags an uploaded file with its upload time, and leaves others untagged', async () => {
+    await settle();
+    const before = Date.now();
+    const goo = syntheticGoo({ width: 80, height: 40, layers: [() => true] });
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/api/upload',
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': 'sorted.goo' },
+      payload: goo,
+    });
+    expect(upload.statusCode).toBe(200);
+
+    const files = (await app.inject({ method: 'GET', url: '/api/files' })).json().files as {
+      path: string;
+      uploadedAt?: number;
+    }[];
+    const uploaded = files.find((f) => f.path === '/local/sorted.goo');
+    expect(uploaded?.uploadedAt).toBeGreaterThanOrEqual(before);
+    // A file the fake printer already held, never uploaded through Cthulhu, has
+    // no time and so sorts to the end of an upload-time sort.
+    const preexisting = files.find((f) => f.path === '/local/cthulhu.goo');
+    expect(preexisting?.uploadedAt).toBeUndefined();
   });
 });
 
