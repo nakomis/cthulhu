@@ -253,3 +253,27 @@ describe('GET /api/timelapses/:id.mp4', () => {
     await app.close();
   });
 });
+
+describe('GET /api/status history state (CTHU-41)', () => {
+  it('says where print history is going', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cthulhu-status-history-'));
+    const { SqliteHistory } = await import('./history.js');
+    const history = new SqliteHistory(join(dir, 'h.sqlite'));
+    const app = make({}, { history });
+    const res = await app.inject({ method: 'GET', url: '/api/status' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().history).toEqual({ store: 'sqlite' });
+    await app.close();
+    await history.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('leaves the field out when there is no history at all', async () => {
+    const app = make({});
+    const res = await app.inject({ method: 'GET', url: '/api/status' });
+
+    expect(res.json()).not.toHaveProperty('history');
+    await app.close();
+  });
+});

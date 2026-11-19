@@ -82,7 +82,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   // the snapshot is secret.
   app.get('/api/status', async (_request, reply) => {
     reply.header('Access-Control-Allow-Origin', '*');
-    return store.snapshot();
+    // Where print history is going (CTHU-41): Postgres, or SQLite during an
+    // outage with `pending` rows waiting to be replayed.
+    const historyState = history?.state?.();
+    return historyState ? { ...store.snapshot(), history: historyState } : store.snapshot();
   });
 
   app.get('/api/history', async (request) => {

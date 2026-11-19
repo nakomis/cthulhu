@@ -27,6 +27,7 @@ If you find this useful, please consider buying me a coffee:
 - [The camera](#the-camera)
 - [Magic Files](#magic-files)
 - [Print history and time-lapse storage](#print-history-and-time-lapse-storage)
+  * [History when Postgres is down (CTHU-41)](#history-when-postgres-is-down-cthu-41)
   * [Migrating history from SQLite to Postgres](#migrating-history-from-sqlite-to-postgres)
 - [Development](#development)
   * [Running against a printer](#running-against-a-printer)
@@ -178,8 +179,8 @@ rather than failing the server to start.
 
 ## Print history and time-lapse storage
 
-The server is moving off Luke into Docker on phi, and later Rey, but its
-storage stays on Luke: print history in Postgres, finished time-lapses on a
+The server runs in Docker on Rey; its storage is on Mace (Luke's until Luke
+died in November 2026): print history in Postgres, finished time-lapses on a
 Samba share. SQLite must never live on a network share — WAL and locking do
 not work over Samba/NFS — which is why history has two implementations. See
 CTHU-15 and CTHU-16.
@@ -203,6 +204,30 @@ CTHU-15 and CTHU-16.
   copy exists on disk, so there is always at least one copy somewhere. Leave
   it unset and time-lapses stay exactly where they are today, on the camera
   service's own disk.
+
+### History when Postgres is down (CTHU-41)
+
+With `DATABASE_URL` set, history survives Postgres going away, at startup or
+mid-print. Writes go to Postgres; on any failure the server logs `history:
+Postgres … recording to SQLite until it is back`, writes to the SQLite file at
+`DATABASE_PATH` instead, and retries Postgres every 30 seconds. When it answers,
+the SQLite rows are replayed into it in order and deleted one by one, each only
+once it is safely in, so a print that started before the outage and ended
+during it is closed once, and a replay cut short by a second outage loses and
+duplicates nothing. `/api/history` meanwhile shows both stores merged (SQLite's
+rows have negative ids), and `/api/status` says which store is in use:
+
+```json
+"history": { "store": "fallback", "pending": 2, "since": "2026-11-19T15:44:00.000Z" }
+```
+
+(`postgres` with `pending: 0` once it has caught up; `sqlite` with no
+`DATABASE_URL`.) While it is down, each new probe error is logged once and
+shown as `lastError`. Writes made while a replay is running wait for it, so
+none is stranded behind or overtakes the rows being copied. The Postgres pool
+has a 5 s connect and 10 s query timeout, so a host that has gone silent fails
+over rather than hanging startup. Before this, an outage either left the server with no history
+until a restart or, mid-run, ended it with an unhandled promise rejection.
 
 ### Migrating history from SQLite to Postgres
 
