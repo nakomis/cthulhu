@@ -135,6 +135,66 @@ export class PostgresHistory implements HistoryStore {
     }));
   }
 
+  /** Throws unless Postgres answers: FailoverHistory's recovery probe (CTHU-41). */
+  async ping(): Promise<void> {
+    await this.db.query('SELECT 1');
+  }
+
+  /**
+   * Merges one row written to SQLite during an outage (CTHU-41), so a replay
+   * leaves each print exactly once, however often it runs:
+   *
+   *   - a task Postgres has never seen: the whole row goes in;
+   *   - a task with an OPEN row here, and an ended row from SQLite (the print
+   *     started before the outage and ended during it): the open row is
+   *     closed with SQLite's outcome and finish time;
+   *   - anything else: Postgres already has it, so nothing changes.
+   *
+   * A row with no task id is matched by its start time, as migrate-history
+   * does, since that is all such a row has to identify it by.
+   */
+  async absorb(record: Omit<PrintRecord, 'id'>): Promise<void> {
+    const ended = !(record.finishedAt === null && record.outcome === 'printing');
+    if (record.taskId) {
+      const { rows } = await this.db.query<{ id: number }>(
+        `SELECT id FROM prints WHERE task_id = $1 AND ${OPEN} ORDER BY id DESC LIMIT 1`,
+        [record.taskId],
+      );
+      const open = rows[0];
+      if (open) {
+        if (ended) {
+          await this.db.query('UPDATE prints SET finished_at = $1, outcome = $2 WHERE id = $3', [
+            record.finishedAt,
+            record.outcome,
+            open.id,
+          ]);
+        }
+        return;
+      }
+      const any = await this.db.query('SELECT id FROM prints WHERE task_id = $1 LIMIT 1', [
+        record.taskId,
+      ]);
+      if (any.rows.length > 0) return;
+    } else if (record.startedAt) {
+      const same = await this.db.query(
+        'SELECT id FROM prints WHERE task_id IS NULL AND started_at = $1 LIMIT 1',
+        [record.startedAt],
+      );
+      if (same.rows.length > 0) return;
+    }
+    await this.db.query(
+      'INSERT INTO prints (task_id, filename, started_at, finished_at, outcome, total_layer) VALUES ($1, $2, $3, $4, $5, $6)',
+      [
+        record.taskId,
+        record.filename,
+        record.startedAt,
+        record.finishedAt,
+        record.outcome,
+        record.totalLayer,
+      ],
+    );
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;

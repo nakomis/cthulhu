@@ -11,9 +11,13 @@ const query = vi.fn(async (text: string) => {
   if (text.includes('SELECT')) return { rows: [] };
   return { rows: [] };
 });
+// pg's Pool emits 'error' when an idle client's server goes away, and an
+// EventEmitter 'error' with no listener is an uncaught exception (CTHU-41).
+const on = vi.fn();
 vi.mock('pg', () => ({
   Pool: class {
     query = query;
+    on = on;
   },
 }));
 
@@ -23,6 +27,7 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'history-'));
   query.mockClear();
+  on.mockClear();
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -42,6 +47,8 @@ describe('createHistoryStore', () => {
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('CREATE TABLE IF NOT EXISTS prints'),
     );
+    expect(on).toHaveBeenCalledWith('error', expect.any(Function));
+    await store.close();
   });
 });
 

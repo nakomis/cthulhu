@@ -49,7 +49,19 @@ export interface HistoryStore {
   ): Promise<void>;
   list(limit?: number): Promise<PrintRecord[]>;
   close(): Promise<void>;
+  /** Where history is being written now; served as `history` in /api/status. */
+  state?(): HistoryState;
 }
+
+/**
+ * `sqlite`: SQLite is the store (no DATABASE_URL). `postgres`: Postgres is,
+ * and nothing is waiting to be replayed. `fallback`: Postgres is unreachable,
+ * so prints are going to SQLite, `pending` rows of it, since `since` (CTHU-41).
+ */
+export type HistoryState =
+  | { store: 'sqlite' }
+  | { store: 'postgres'; pending: 0 }
+  | { store: 'fallback'; pending: number; since: string };
 
 /**
  * Print history, using node:sqlite, which ships with Node, rather than
@@ -153,6 +165,44 @@ export class SqliteHistory implements HistoryStore {
     return Promise.resolve();
   }
 
+  /**
+   * A print's end, for a task with no open row here: during a Postgres outage
+   * (CTHU-41) a print that started in Postgres finishes with nothing in SQLite
+   * to close, and the end must still be kept for the replay to apply.
+   */
+  recordClosed(
+    taskId: string,
+    outcome: 'complete' | 'stopped' | 'error',
+    finishedAt: string = new Date().toISOString(),
+  ): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.db
+      .prepare('INSERT INTO prints (task_id, finished_at, outcome) VALUES (?, ?, ?)')
+      .run(taskId, finishedAt, outcome);
+    return Promise.resolve();
+  }
+
+  /** Every row, oldest first: the order a replay applies them in (CTHU-41). */
+  allRows(): PrintRecord[] {
+    if (this.closed) return [];
+    const rows = this.db
+      .prepare(
+        'SELECT id, task_id, filename, started_at, finished_at, outcome, total_layer FROM prints ORDER BY id',
+      )
+      .all() as Record<string, unknown>[];
+    return rows.map(toRecord);
+  }
+
+  /** Drops one row once a replay has put it safely into Postgres (CTHU-41). */
+  deleteRow(id: number): void {
+    if (this.closed) return;
+    this.db.prepare('DELETE FROM prints WHERE id = ?').run(id);
+  }
+
+  hasOpenRow(taskId: string): boolean {
+    return !this.closed && this.openRowFor(taskId);
+  }
+
   private openRowFor(taskId: string): boolean {
     const row = this.db.prepare(`SELECT id FROM prints WHERE task_id = ? AND ${OPEN}`).get(taskId);
     return row !== undefined;
@@ -166,17 +216,11 @@ export class SqliteHistory implements HistoryStore {
       )
       .all(limit) as Record<string, unknown>[];
 
-    return Promise.resolve(
-      rows.map((r) => ({
-        id: Number(r.id),
-        taskId: (r.task_id as string | null) ?? null,
-        filename: (r.filename as string | null) ?? null,
-        startedAt: (r.started_at as string | null) ?? null,
-        finishedAt: (r.finished_at as string | null) ?? null,
-        outcome: String(r.outcome),
-        totalLayer: r.total_layer === null ? null : Number(r.total_layer),
-      })),
-    );
+    return Promise.resolve(rows.map(toRecord));
+  }
+
+  state(): HistoryState {
+    return { store: 'sqlite' };
   }
 
   close(): Promise<void> {
@@ -188,6 +232,19 @@ export class SqliteHistory implements HistoryStore {
   }
 }
 
+function toRecord(r: Record<string, unknown>): PrintRecord {
+  return {
+    id: Number(r.id),
+    taskId: (r.task_id as string | null) ?? null,
+    filename: (r.filename as string | null) ?? null,
+    startedAt: (r.started_at as string | null) ?? null,
+    finishedAt: (r.finished_at as string | null) ?? null,
+    outcome: String(r.outcome),
+    totalLayer:
+      r.total_layer === null || r.total_layer === undefined ? null : Number(r.total_layer),
+  };
+}
+
 /**
  * Picks the history store from configuration: Postgres when DATABASE_URL is
  * set, SQLite (the development and small-deployment default) otherwise.
@@ -196,14 +253,27 @@ export class SqliteHistory implements HistoryStore {
  * loading it, and so a test importing this module without `pg` installed (as
  * a peer scenario, not this workspace) still works.
  */
-export async function createHistoryStore(config: {
-  databasePath: string;
-  databaseUrl?: string | undefined;
-}): Promise<HistoryStore> {
+export async function createHistoryStore(
+  config: {
+    databasePath: string;
+    databaseUrl?: string | undefined;
+  },
+  log: (msg: string) => void = () => {},
+): Promise<HistoryStore> {
   if (config.databaseUrl) {
     const { Pool } = await import('pg');
     const { PostgresHistory } = await import('./postgres-history.js');
-    return PostgresHistory.create(new Pool({ connectionString: config.databaseUrl }));
+    const { FailoverHistory } = await import('./failover-history.js');
+    const pool = new Pool({ connectionString: config.databaseUrl });
+    // pg emits 'error' on the pool when an idle client's server goes away. An
+    // EventEmitter 'error' with no listener is an uncaught exception, so
+    // without this a Postgres outage would kill the process (CTHU-41).
+    pool.on('error', (err) => log(`history: Postgres pool error: ${err.message}`));
+    return FailoverHistory.create({
+      connect: () => PostgresHistory.create(pool),
+      sqlitePath: config.databasePath,
+      log,
+    });
   }
   return new SqliteHistory(config.databasePath);
 }

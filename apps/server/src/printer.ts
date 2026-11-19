@@ -118,16 +118,23 @@ export class PrinterService {
       this.log(`printer error: ${err.message}`);
     });
 
+    // History is best-effort, and these run from event handlers with nothing
+    // above them to catch: a rejection here would be unhandled, which Node
+    // exits on. FailoverHistory never rejects; this keeps any store safe
+    // (CTHU-41: a Postgres outage would otherwise have killed the server).
+    const historyFailed = (err: unknown) =>
+      this.log(`history: write failed: ${err instanceof Error ? err.message : String(err)}`);
+
     this.store.on('printStarted', ({ filename, taskId, totalLayer, startedAt }) => {
-      void this.history?.startPrint(taskId, filename, totalLayer, startedAt);
+      void this.history?.startPrint(taskId, filename, totalLayer, startedAt).catch(historyFailed);
     });
 
     this.store.on('printSeenFinished', ({ filename, taskId, totalLayer, outcome }) => {
-      void this.history?.recordFinished(taskId, filename, totalLayer, outcome);
+      void this.history?.recordFinished(taskId, filename, totalLayer, outcome).catch(historyFailed);
     });
 
     this.store.on('printFinished', ({ filename, taskId }) => {
-      void this.history?.finishPrint(taskId, 'complete');
+      void this.history?.finishPrint(taskId, 'complete').catch(historyFailed);
       // notify() never throws and returns false on failure - which, unlogged,
       // means a broken notification path is indistinguishable from a working
       // one until somebody notices their phone never buzzes. Say something.

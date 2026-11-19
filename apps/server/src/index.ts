@@ -31,10 +31,11 @@ async function main(): Promise<void> {
 
   let history: HistoryStore | undefined;
   try {
-    history = await createHistoryStore(config);
+    history = await createHistoryStore(config, (msg) => process.stdout.write(`${msg}\n`));
   } catch (err) {
     // History is a nice-to-have; a missing volume must not stop the server
-    // reporting live status, which is the primary job.
+    // reporting live status, which is the primary job. (A Postgres that is
+    // down no longer lands here: FailoverHistory starts on SQLite, CTHU-41.)
     process.stderr.write(`History unavailable (${String(err)}); continuing without it\n`);
   }
 
