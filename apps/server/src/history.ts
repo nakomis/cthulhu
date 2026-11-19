@@ -61,7 +61,7 @@ export interface HistoryStore {
 export type HistoryState =
   | { store: 'sqlite' }
   | { store: 'postgres'; pending: 0 }
-  | { store: 'fallback'; pending: number; since: string };
+  | { store: 'fallback'; pending: number; since: string; lastError?: string };
 
 /**
  * Print history, using node:sqlite, which ships with Node, rather than
@@ -264,7 +264,15 @@ export async function createHistoryStore(
     const { Pool } = await import('pg');
     const { PostgresHistory } = await import('./postgres-history.js');
     const { FailoverHistory } = await import('./failover-history.js');
-    const pool = new Pool({ connectionString: config.databaseUrl });
+    // Timeouts, because a host that has gone silent (rather than refusing)
+    // would otherwise hang a connect or a query for the OS's TCP timeout:
+    // startup waits on the first connect, and a hung write would never fail
+    // over (CTHU-41).
+    const pool = new Pool({
+      connectionString: config.databaseUrl,
+      connectionTimeoutMillis: 5_000,
+      query_timeout: 10_000,
+    });
     // pg emits 'error' on the pool when an idle client's server goes away. An
     // EventEmitter 'error' with no listener is an uncaught exception, so
     // without this a Postgres outage would kill the process (CTHU-41).

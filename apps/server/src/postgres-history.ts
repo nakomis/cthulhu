@@ -163,11 +163,12 @@ export class PostgresHistory implements HistoryStore {
       const open = rows[0];
       if (open) {
         if (ended) {
-          await this.db.query('UPDATE prints SET finished_at = $1, outcome = $2 WHERE id = $3', [
-            record.finishedAt,
-            record.outcome,
-            open.id,
-          ]);
+          // COALESCE: an end known only from recordFinished has no time, and
+          // must not blank one Postgres already holds.
+          await this.db.query(
+            'UPDATE prints SET finished_at = COALESCE($1, finished_at), outcome = $2 WHERE id = $3',
+            [record.finishedAt, record.outcome, open.id],
+          );
         }
         return;
       }

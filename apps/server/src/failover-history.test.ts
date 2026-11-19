@@ -203,6 +203,64 @@ describe('FailoverHistory (CTHU-41)', () => {
     expect(sqliteRowCount()).toBe(0);
   });
 
+  it('queues writes made during a replay behind it, so nothing is stranded or lost', async () => {
+    const history = await failover();
+    pg.down = true;
+    await history.startPrint('early', 'early.goo', 10, '2026-11-19T17:00:00.000Z');
+    pg.down = false;
+
+    // Hold the replay at its first INSERT, and write while it is held.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realQuery = pg.db.query;
+    let held = false;
+    pg.db.query = (async (text: string, params?: unknown[]) => {
+      if (!held && text.startsWith('INSERT')) {
+        held = true;
+        await gate;
+      }
+      return realQuery(text, params);
+    }) as PgLike['query'];
+
+    const replay = history.recover();
+    await new Promise((r) => setTimeout(r, 20));
+    // One write changes a row the replay is copying; the other adds a new one.
+    const finishing = history.finishPrint('early', 'complete');
+    const starting = history.startPrint('late', 'late.goo', 5, '2026-11-19T17:30:00.000Z');
+    release();
+    await Promise.all([replay, finishing, starting]);
+    pg.db.query = realQuery;
+
+    const rows = await postgresRows();
+    expect(rows.map((r) => [r.task_id, r.outcome])).toEqual([
+      ['early', 'complete'],
+      ['late', 'printing'],
+    ]);
+    expect(rows[0]?.finished_at).not.toBeNull();
+    expect(sqliteRowCount()).toBe(0);
+    expect(history.state()).toEqual({ store: 'postgres', pending: 0 });
+  });
+
+  it('keeps the Postgres row details when only the end of a print is in SQLite', async () => {
+    const history = await failover();
+    await history.startPrint('t9', 'tower.goo', 90, '2026-11-19T18:00:00.000Z');
+    pg.down = true;
+    await history.finishPrint('t9', 'complete');
+    pg.down = false;
+
+    const [row] = await history.list();
+    expect(row).toMatchObject({
+      taskId: 't9',
+      filename: 'tower.goo',
+      totalLayer: 90,
+      startedAt: '2026-11-19T18:00:00.000Z',
+      outcome: 'complete',
+    });
+    expect(row?.finishedAt).not.toBeNull();
+  });
+
   it('lists SQLite and Postgres rows together during an outage, without duplicates or id clashes', async () => {
     const history = await failover();
     await history.startPrint('before', 'one.goo', 10, '2026-11-19T15:00:00.000Z');
@@ -278,11 +336,17 @@ describe('PrinterService with a history store that fails (CTHU-41)', () => {
       });
       await new Promise((r) => setTimeout(r, 150));
       printer.tick(5 * 20);
-      await new Promise((r) => setTimeout(r, 300));
+      // Poll rather than sleep a fixed time: done once both the start and the
+      // finish have failed and been logged, or after 3 s.
+      for (let i = 0; i < 60 && logs.filter((l) => l.includes('history')).length < 2; i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // One more tick, so an unhandled rejection has a chance to surface.
+      await new Promise((r) => setTimeout(r, 50));
     } finally {
       process.off('unhandledRejection', onRejection);
     }
     expect(rejected).toEqual([]);
-    expect(logs.some((l) => l.includes('history'))).toBe(true);
+    expect(logs.filter((l) => l.includes('history'))).toHaveLength(2);
   });
 });

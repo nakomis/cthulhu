@@ -222,7 +222,11 @@ rows have negative ids), and `/api/status` says which store is in use:
 ```
 
 (`postgres` with `pending: 0` once it has caught up; `sqlite` with no
-`DATABASE_URL`.) Before this, an outage either left the server with no history
+`DATABASE_URL`.) While it is down, each new probe error is logged once and
+shown as `lastError`. Writes made while a replay is running wait for it, so
+none is stranded behind or overtakes the rows being copied. The Postgres pool
+has a 5 s connect and 10 s query timeout, so a host that has gone silent fails
+over rather than hanging startup. Before this, an outage either left the server with no history
 until a restart or, mid-run, ended it with an unhandled promise rejection.
 
 ### Migrating history from SQLite to Postgres
